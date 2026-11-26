@@ -10,9 +10,13 @@ import numpy as np
 from PIL import Image
 
 from aethryx_anatomy import blocking_geometry_issues, validate_deformation
+from aethryx_bridge import inspect_avatar_glb
+from aethryx_materials import CHANNELS, RESOLUTIONS, save_pbr_maps, transform_uv, update_pbr_maps, uv_quality
+from aethryx_rig import export_rigged_avatar, preview_expression, preview_pose
 from aethryx_modular import (
     BODY, EYES, FACE_CONTROLS, ModularAvatar, anime_body, apply_material, avatar_eye,
-    body_contacts, facial_vertices, fit_garment, fit_hair, head_frame, recolor_iris, write_new_glb,
+    body_contacts, facial_vertices, fit_garment, fit_hair, fitted_eyelids, head_frame,
+    mouth_components, recolor_iris, regional_hair, write_new_glb,
 )
 
 
@@ -20,8 +24,8 @@ class ComponentDialog(tk.Toplevel):
     def __init__(self, master, scene, hidden):
         super().__init__(master)
         self.title("Genesis · Componentes del avatar")
-        self.geometry("850x570")
-        self.minsize(680, 500)
+        self.geometry("1040x650")
+        self.minsize(880, 540)
         self.transient(master)
         self.grab_set()
         self.result = None
@@ -40,6 +44,12 @@ class ComponentDialog(tk.Toplevel):
             (("Crear cuerpo anime", self.create_body), ("Rostro…", self.face), ("Crear ojos", self.eyes),
              ("Cabello…", self.hair), ("Prenda superior…", self.clothing)),
             (("Color / iris…", self.material), ("UV y textura…", self.texture), ("Comprobar ajuste", self.contacts)),
+            (("Perfil anime…", self.create_profile), ("Párpados", self.eyelids), ("Interior bucal", self.mouth),
+             ("Cabello por regiones…", self.hair_regions)),
+            (("Mapas PBR…", self.pbr), ("Diagnóstico UV…", self.diagnose_uv), ("Ajustar UV…", self.edit_uv),
+             ("Guardar conjunto…", self.save_outfit), ("Abrir conjunto…", self.load_outfit)),
+            (("Exportar rig GLB…", self.export_rig), ("Guardar pose de prueba…", self.export_pose),
+             ("Guardar expresión de prueba…", self.export_expression), ("Revisar rig GLB…", self.inspect_rig)),
         )):
             for column, (label, command) in enumerate(buttons):
                 button = ttk.Button(actions, text=label, command=command)
@@ -176,6 +186,45 @@ class ComponentDialog(tk.Toplevel):
     def create_body(self):
         self._edit(lambda: self.avatar.add(BODY, anime_body()), BODY)
 
+    def create_profile(self):
+        profile = simpledialog.askstring("Perfil corporal anime", "Elige neutro, femenino o masculino.",
+                                         initialvalue="femenino", parent=self)
+        if profile is not None:
+            self._edit(lambda: self.avatar.add(BODY, anime_body("Anime " + profile.strip().lower())), BODY)
+
+    def _group(self, pieces, hide=()):
+        working = ModularAvatar(self.avatar.scene, self.avatar.hidden)
+        for name, piece in pieces.items():
+            if name in working.nodes:
+                transform, _ = working.scene.graph[name]
+                piece.apply_transform(np.linalg.inv(transform))
+            working.upsert(name, piece)
+        working.hidden.update(name for name in hide if name in working.nodes)
+        self.avatar = working
+
+    def eyelids(self):
+        def generate():
+            if any(node not in self.avatar.nodes for node in EYES):
+                raise ValueError("Genera primero ambos ojos.")
+            pieces = {f"{eye}-parpado-{name}": piece for eye in EYES
+                      for name, piece in fitted_eyelids(self.avatar.get(eye, world=True)).items()}
+            self._group(pieces)
+        self._edit(generate)
+
+    def mouth(self):
+        self._edit(lambda: self._group(mouth_components(self._body())), "boca-cavidad")
+
+    def hair_regions(self):
+        values = self._numbers("Cabello por regiones", "Longitud 0–1 y volumen 0,02–0,15.", "0.35 0.055", 2)
+        if values is None:
+            return
+        _, root = colorchooser.askcolor(color="#281a3a", title="Color de raíz", parent=self)
+        if not root:
+            return
+        _, tip = colorchooser.askcolor(color="#99568c", title="Color de puntas", parent=self)
+        if tip:
+            self._edit(lambda: self._group(regional_hair(self._body(), *values, root, tip), {"cabello"}))
+
     def _numbers(self, title, description, initial, count):
         entry = simpledialog.askstring(title, description, initialvalue=initial, parent=self)
         if entry is None:
@@ -193,7 +242,7 @@ class ComponentDialog(tk.Toplevel):
         factors = self._numbers(
             "Ajustes relativos del rostro",
             f"Factores 0,75–1,25 en este orden. {', '.join(FACE_CONTROLS.values())}",
-            "1 1 1 1 1 1", len(FACE_CONTROLS),
+            " ".join(["1"] * len(FACE_CONTROLS)), len(FACE_CONTROLS),
         )
         if factors is None:
             return
@@ -241,18 +290,172 @@ class ComponentDialog(tk.Toplevel):
             self._edit(lambda: self._new_fitted("cabello", fit_hair(self._body(), *values)), "cabello")
 
     def clothing(self):
+        style = simpledialog.askstring("Estilo de prenda", "Elige top, falda o vestido.", initialvalue="top", parent=self)
+        if style is None:
+            return
+        style = style.strip().lower()
         values = self._numbers(
             "Prenda superior", "Holgura 0,003–0,06 y espesor 0,001–0,03 de la altura.", "0.012 0.006", 2,
         )
         if values is None:
             return
         def generate():
-            garment, report = fit_garment(self._body(), *values)
+            garment, report = fit_garment(self._body(), *values, style=style)
             if report["contacts"] or report["inside"] != 0:
                 raise ValueError(f"Se rechazó el ajuste. Contactos {report['contacts']}, vértices dentro {report['inside']}.")
-            self._new_fitted("prenda-superior", garment)
+            self._new_fitted(node, garment)
             return "Prenda cerrada, cero contactos y cero vértices dentro del cuerpo."
-        self._edit_background(generate, "prenda-superior")
+        node = "prenda-superior" if style == "top" else f"prenda-{style}"
+        self._edit_background(generate, node)
+
+    def save_outfit(self):
+        path = self._save_path("Guardar conjunto de prendas", "conjunto")
+        if path:
+            try:
+                self.avatar.export_outfit(path)
+                self.status.set(f"Conjunto guardado en {path}")
+            except Exception as exc:
+                messagebox.showerror("Guardar conjunto", str(exc), parent=self)
+
+    def export_rig(self):
+        influences = simpledialog.askinteger("Rig humanoide", "Máximo de influencias por vértice.",
+                                             initialvalue=4, minvalue=1, maxvalue=4, parent=self)
+        if influences is None:
+            return
+        path = self._save_path("Guardar GLB con rig y expresiones", "avatar-articulado")
+        if path:
+            try:
+                report = export_rigged_avatar(self.avatar.scene, path, influences)
+                self.status.set(f"GLB con {report['joints']} huesos, {len(report['morphs'])} expresiones y animación de prueba.")
+            except Exception as exc:
+                messagebox.showerror("Exportar rig", str(exc), parent=self)
+
+    def export_pose(self):
+        path = self._save_path("Guardar una pose estática para inspeccionar en Studio", "pose-de-prueba")
+        if path:
+            try:
+                write_new_glb(preview_pose(self.avatar.scene), path)
+                self.status.set(f"Pose guardada en {path}.")
+            except Exception as exc:
+                messagebox.showerror("Pose de prueba", str(exc), parent=self)
+
+    def inspect_rig(self):
+        path = filedialog.askopenfilename(parent=self, filetypes=[("Avatar GLB", "*.glb")])
+        if path:
+            try:
+                report = inspect_avatar_glb(path)
+                result = "Validación local del GLB superada." if report["valid_native_glb"] else "\n".join(report["errors"])
+                messagebox.showinfo("Revisión nativa del GLB", (
+                    f"{result}\nHuesos {report['joints']} · Caras {report['triangles']}\n"
+                    f"Materiales {report['materials']} · Visemas {report['visemes']}\n"
+                    "La importación en Unity y VRChat requiere una prueba aparte."
+                ), parent=self)
+            except (ValueError, KeyError, IndexError, OSError, TypeError) as exc:
+                messagebox.showerror("Revisar rig", str(exc), parent=self)
+
+    def export_expression(self):
+        name = simpledialog.askstring(
+            "Expresión de prueba", "Escribe Smile, Sad, Anger, Surprise, JawOpen, BlinkLeft, BlinkRight o un visema.",
+            initialvalue="Smile", parent=self,
+        )
+        if name:
+            path = self._save_path("Guardar expresión estática para inspeccionar en Studio", "expresion-de-prueba")
+            if path:
+                try:
+                    write_new_glb(preview_expression(self.avatar.scene, name), path)
+                    self.status.set(f"Expresión guardada en {path}.")
+                except Exception as exc:
+                    messagebox.showerror("Expresión de prueba", str(exc), parent=self)
+
+    def load_outfit(self):
+        path = filedialog.askopenfilename(parent=self, filetypes=[("Conjunto GLB", "*.glb")])
+        if path:
+            self._edit(lambda: self.avatar.apply_outfit(path))
+
+    def diagnose_uv(self):
+        node = self._selected()
+        if not node:
+            return
+        try:
+            quality = uv_quality(self.avatar.get(node))
+            distortion = quality["area_distortion_p95_stops"]
+            messagebox.showinfo("Diagnóstico UV", (
+                f"Triángulos degenerados {quality['degenerate']}\n"
+                f"Vértices fuera de 0–1 {quality['outside_vertices']}\n"
+                f"Solapamiento muestreado {quality['overlap_fraction']:.1%}\n"
+                f"Distorsión p95 en pasos de área {round(distortion, 2) if distortion is not None else 'sin datos'}"
+            ), parent=self)
+        except Exception as exc:
+            messagebox.showerror("Diagnóstico UV", str(exc), parent=self)
+
+    def edit_uv(self):
+        node = self._selected()
+        if not node:
+            return
+        values = self._numbers("Transformar UV", "Escala U V y desplazamiento U V.", "1 1 0 0", 4)
+        if values is not None:
+            self._edit(lambda: self.avatar.replace(node, transform_uv(
+                self.avatar.get(node), values[:2], values[2:])), node)
+
+    def pbr(self):
+        node = self._selected()
+        if not node:
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Mapas PBR · {node}")
+        dialog.transient(self)
+        dialog.grab_set()
+        paths = {}
+        mesh = self.avatar.get(node)
+        current = getattr(mesh.visual, "material", None)
+        mode = tk.StringVar(value=getattr(current, "alphaMode", None) or "OPAQUE")
+        size = tk.StringVar(value="1024")
+        cutoff = tk.StringVar(value=str(getattr(current, "alphaCutoff", None) or .5))
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill="both")
+
+        def choose(channel, label):
+            path = filedialog.askopenfilename(parent=dialog, filetypes=[("Textura PNG", "*.png")])
+            if path:
+                paths[channel] = path
+                label.set(Path(path).name)
+
+        for index, (key, title) in enumerate(CHANNELS.items()):
+            label = tk.StringVar(value="Conservar mapa actual")
+            ttk.Button(frame, text=title, command=lambda k=key, v=label: choose(k, v)).grid(row=index, column=0, sticky="ew")
+            ttk.Label(frame, textvariable=label).grid(row=index, column=1, sticky="w", padx=8)
+        ttk.Combobox(frame, textvariable=size, values=RESOLUTIONS, state="readonly", width=10).grid(row=6, column=0)
+        ttk.Combobox(frame, textvariable=mode, values=("OPAQUE", "MASK", "BLEND"),
+                     state="readonly", width=10).grid(row=6, column=1)
+        ttk.Label(frame, text="Corte alfa").grid(row=7, column=0)
+        ttk.Entry(frame, textvariable=cutoff, width=10).grid(row=7, column=1)
+
+        def accept():
+            try:
+                images = {}
+                for channel, path in paths.items():
+                    with Image.open(path) as image:
+                        images[channel] = image.copy()
+                update_pbr_maps(mesh, images, int(size.get()), mode.get(), float(cutoff.get().replace(",", ".")))
+            except Exception as exc:
+                messagebox.showerror("Mapas PBR", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            self._edit(lambda: self.avatar.replace(node, mesh), node)
+
+        def save():
+            folder = filedialog.askdirectory(parent=dialog)
+            if folder:
+                try:
+                    count = save_pbr_maps(mesh, folder)
+                    messagebox.showinfo("Mapas PBR", f"{count} mapas guardados.", parent=dialog)
+                except Exception as exc:
+                    messagebox.showerror("Mapas PBR", str(exc), parent=dialog)
+
+        ttk.Button(frame, text="Aplicar", command=accept).grid(row=8, column=0)
+        ttk.Button(frame, text="Exportar PNG…", command=save).grid(row=8, column=1, padx=8)
+        self.wait_window(dialog)
+        self.grab_set()
 
     def _new_fitted(self, node, mesh):
         # The geometry was fitted in the world frame of the current body.

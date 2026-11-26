@@ -9,26 +9,29 @@ from trimesh.visual.material import PBRMaterial
 from trimesh.visual.texture import TextureVisuals
 
 from aethryx_anatomy import anime_proportions, load_body_template
-from aethryx_profiles import BUNDLED_BODY
+from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY
 
 
 BODY = "cuerpo-base"
 EYES = ("ojo-izquierdo", "ojo-derecho")
 FACE_CONTROLS = {
     "jaw": "Mandíbula", "cheeks": "Mejillas", "nose": "Nariz", "mouth": "Boca",
-    "eye_size": "Tamaño de ojos", "eye_spacing": "Separación de ojos",
+    "eye_size": "Tamaño de ojos", "eye_spacing": "Separación de ojos", "lips": "Grosor de labios",
 }
 
 
-def anime_body():
+def anime_body(profile="Anime neutro"):
     mesh = load_body_template(BUNDLED_BODY)
     proportions = {
         "head": 1.18, "neck": .92, "waist": .96, "legs": 1.08, "hands": .94,
     }
+    if profile != "Anime neutro":
+        proportions.update(BODY_PROFILES[profile])
+        proportions["head"] += .08
     face = {"jaw": .92, "nose": .91, "eye_size": 1.10}
     mesh.vertices = anime_proportions(mesh.vertices, mesh.bounds, proportions)
     mesh.vertices = facial_vertices(mesh, face)
-    mesh.metadata.update(aethryx_style="genesis-anime-v1", aethryx_proportions=proportions,
+    mesh.metadata.update(aethryx_style="genesis-anime-v1", aethryx_profile=profile, aethryx_proportions=proportions,
                          aethryx_face_edits=[face])
     apply_material(mesh, "#edbea9", projection="cylindrical")
     return mesh
@@ -59,9 +62,10 @@ def facial_vertices(mesh, factors):
         front = np.clip((z - .40) / .46, 0, 1)
         return np.exp(-((x - px) / sx)**2 - ((y - py) / sy)**2) * front
 
-    jaw = weight(.5, .08, .48, .22)
+    jaw = weight(.5, -.06, .48, .22)
     cheek = weight(.5 + side * .25, .29, .22, .19)
-    mouth = weight(.5, .14, .24, .10)
+    mouth = weight(.5, .02, .24, .10)
+    lip = weight(.5, .022, .21, .055)
     nose = weight(.5, .34, .13, .20)
     eye_x = .5 + side * .214
     eyes = weight(eye_x, .36, .19, .14)
@@ -70,8 +74,9 @@ def facial_vertices(mesh, factors):
                              + (x - eye_x) * eyes * scale["eye_size"]
                              + side * .214 * eyes * scale["eye_spacing"])
     result[:, 1] += height * ((y - .36) * eyes * scale["eye_size"] - .20 * jaw * scale["jaw"])
+    result[:, 1] += height * (y - .022) * lip * scale["lips"]
     result[:, 2] += depth * (.20 * cheek * scale["cheeks"] + .34 * nose * scale["nose"]
-                             + .10 * mouth * scale["mouth"])
+                             + .10 * mouth * scale["mouth"] + .11 * lip * scale["lips"])
     return result
 
 
@@ -101,9 +106,12 @@ def apply_material(mesh, color, *, projection=None, roughness=.57, image=None):
         image = getattr(getattr(previous, "material", None), "baseColorTexture", None)
     if image is not None and uv is None:
         raise ValueError("Genera coordenadas UV antes de aplicar una textura.")
-    mesh.visual = TextureVisuals(uv=uv, material=PBRMaterial(
-        baseColorFactor=[*rgb, 255], baseColorTexture=image, metallicFactor=0, roughnessFactor=roughness,
-    ))
+    current = getattr(previous, "material", None)
+    material = current.copy() if isinstance(current, PBRMaterial) else PBRMaterial(metallicFactor=0)
+    material.baseColorFactor = [*rgb, 255]
+    material.baseColorTexture = image
+    material.roughnessFactor = roughness
+    mesh.visual = TextureVisuals(uv=uv, material=material)
     return mesh
 
 
@@ -145,6 +153,75 @@ def avatar_eye(body, left, color, size=1, spacing=1):
 def recolor_iris(mesh, color, roughness=.23):
     return apply_material(mesh, "#ffffff", projection="cylindrical", roughness=roughness, image=_iris(color))
 
+
+def fitted_eyelids(eye, color="#edbea9"):
+    """Build two volumetric lid bands around the fitted eye opening in its frame."""
+    center = eye.bounds.mean(axis=0)
+    radii = eye.extents / 2
+    u = np.linspace(-.93, .93, 37)
+    arc = np.sqrt(1 - u**2)
+    pieces = {}
+    for name, sign, opening in (("superior", 1, .49), ("inferior", -1, .53)):
+        v = sign * np.linspace(opening, .96, 5)[:, None] * arc + .09 * u
+        z = np.sqrt(np.maximum(0, 1 - u**2 - v**2)) + .035
+        points = np.stack((np.broadcast_to(u, v.shape), v, z), axis=2).reshape(-1, 3)
+        patch = _grid_patch(center + points * radii, len(u))
+        if np.mean(patch.face_normals[:, 2]) < 0:
+            patch.invert()
+        shell = _shell(patch, np.ones(len(patch.faces), dtype=bool), radii[2] * .012, radii[2] * .16)
+        if shell.volume < 0:
+            shell.invert()
+        pieces[name] = apply_material(shell, color, projection="planar")
+    return pieces
+
+
+def _grid_patch(vertices, width):
+    start = np.arange(len(vertices) - width)
+    start = start[start % width != width - 1]
+    faces = np.vstack((np.column_stack((start, start + 1, start + width + 1)),
+                       np.column_stack((start, start + width + 1, start + width))))
+    return trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+
+
+def mouth_components(body):
+    """Create an open-front mouth bowl and separate dentition and tongue."""
+    low, high = head_frame(body)
+    width, height, depth = high - low
+    mid = (high + low) / 2
+    mouth_y = low[1] + .020 * height
+    v = body.vertices
+    near = (abs(v[:, 0] - mid[0]) < .24 * width) & (abs(v[:, 1] - mouth_y) < .075 * height)
+    if not near.any():
+        raise ValueError("La plantilla no ofrece una superficie en la zona bucal.")
+    lip_z = np.quantile(v[near, 2], .90)
+    origin = np.array([mid[0], mouth_y, lip_z - .10 * depth])
+    radius = np.array([width * .17, height * .062, depth * .26])
+    angle = np.linspace(0, 2 * np.pi, 49)
+    rows = np.linspace(0, 1.40, 10)[:, None]
+    x = np.cos(rows) * np.cos(angle)
+    y = np.cos(rows) * np.sin(angle)
+    z = -np.sin(rows) * np.ones_like(angle)
+    bowl = _grid_patch(origin + np.stack((x, y, z), axis=2).reshape(-1, 3) * radius, len(angle))
+    rim = np.arange(len(bowl.vertices) - len(angle), len(bowl.vertices))
+    cap = np.column_stack((rim[1:], rim[:-1], np.full(len(rim) - 1, len(bowl.vertices))))
+    bowl = trimesh.Trimesh(vertices=np.vstack((bowl.vertices, origin - [0, 0, radius[2]])),
+                          faces=np.vstack((bowl.faces, cap)), process=False)
+    bowl.merge_vertices()
+    bowl.visual = TextureVisuals(material=PBRMaterial(baseColorFactor=[66, 20, 30, 255], doubleSided=True))
+    parts = {"boca-cavidad": bowl}
+    for label, side in (("dientes-superiores", 1), ("dientes-inferiores", -1)):
+        teeth = []
+        for position in np.linspace(-.78, .78, 10):
+            tooth = trimesh.creation.icosphere(subdivisions=1)
+            tooth.vertices *= radius * [0.081, .30, .21]
+            tooth.apply_translation(origin + radius * [position, .51 * side, -.42 - .28 * position**2])
+            teeth.append(tooth)
+        parts[label] = apply_material(trimesh.util.concatenate(teeth), "#f5e9dd", projection="planar", roughness=.32)
+    tongue = trimesh.creation.icosphere(subdivisions=2)
+    tongue.vertices *= radius * [.66, .33, .46]
+    tongue.apply_translation(origin + radius * [0, -.48, -.52])
+    parts["lengua"] = apply_material(tongue, "#b95a6e", projection="planar", roughness=.46)
+    return parts
 
 def _shell(body, selection, clearance, thickness, adapt=None):
     triangles = body.faces[selection]
@@ -193,6 +270,40 @@ def fit_hair(body, length=.35, volume=.055, color="#33233d"):
     return apply_material(shell, color, projection="cylindrical", roughness=.68)
 
 
+def regional_hair(body, length=.35, volume=.055, root="#261a3a", tip="#9a578c"):
+    """Partition the conformal cap by angle and preserve each region as a solid."""
+    hair = fit_hair(body, length, volume)
+    count = len(hair.vertices) // 2
+    # The first half of vertices and faces represent the outer cap.
+    centers = hair.triangles_center
+    low, high = head_frame(body)
+    mid = (low + high) / 2
+    angle = np.arctan2(centers[:, 0] - mid[0], centers[:, 2] - mid[2])
+    outer = (hair.faces < count).all(axis=1)
+    result = {}
+    regions = (
+        ("flequillo", (abs(angle) <= .81)),
+        ("lateral-izquierdo", (angle > .81) & (angle <= 2.23)),
+        ("lateral-derecho", (angle < -.81) & (angle >= -2.23)),
+        ("posterior", abs(angle) > 2.23),
+    )
+    strip = np.tile(np.linspace(1, 0, 256)[:, None, None], (1, 4, 1))
+    rgb = [np.array(Image.new("RGB", (1, 1), color))[0, 0] for color in (root, tip)]
+    texture = Image.fromarray(np.rint(strip * rgb[0] + (1 - strip) * rgb[1]).astype(np.uint8))
+    for name, mask in regions:
+        selection = mask & outer
+        zone = hair.submesh([selection], repair=False)[0]
+        sections = zone.split(only_watertight=False, repair=False)
+        piece = trimesh.util.concatenate([
+            _shell(section, np.ones(len(section.faces), dtype=bool), .00045, .00165)
+            for section in sections
+        ])
+        result[f"cabello-{name}"] = apply_material(
+            piece, "#ffffff", projection="cylindrical", roughness=.66, image=texture,
+        )
+    return result
+
+
 def body_contacts(body, component):
     """Count surface contacts and component vertices enclosed by the closed body."""
     from pyvista import PolyData
@@ -224,32 +335,45 @@ def body_contacts(body, component):
     return {"contacts": collision.GetNumberOfContacts(), "inside": inside}
 
 
-def fit_garment(body, clearance=.012, thickness=.006, color="#4266ac"):
+GARMENT_STYLES = {"top": (.53, .735), "falda": (.32, .55), "vestido": (.31, .735)}
+
+
+def fit_garment(body, clearance=.012, thickness=.006, color="#4266ac", *, style="top"):
     if not .003 <= clearance <= .06 or not .001 <= thickness <= .03:
         raise ValueError("Holgura 0,003–0,06 y espesor 0,001–0,03 de la altura.")
     if not body.is_watertight:
         raise ValueError("La prueba de ajuste requiere un cuerpo cerrado.")
-    mesh = _torso_loft(body, clearance, thickness)
+    if style not in GARMENT_STYLES:
+        raise ValueError("Estilo de prenda desconocido.")
+    mesh = _torso_loft(body, clearance, thickness, style)
+    mesh.metadata["aethryx_garment"] = {"style": style, "clearance": clearance, "thickness": thickness}
     report = body_contacts(body, mesh)
     return apply_material(mesh, color, projection="cylindrical", roughness=.8), report
 
 
-def _torso_loft(body, clearance, thickness):
+def _torso_loft(body, clearance, thickness, style="top"):
     """Loft a closed two-layer top from torso sections, with clean planar rims."""
     low, high = body.bounds
     height = high[1] - low[1]
-    levels = low[1] + np.linspace(.53, .735, 32) * height
+    levels = np.linspace(*GARMENT_STYLES[style], 36 if style != "top" else 32)
     theta = np.linspace(0, 2 * np.pi, 72, endpoint=False)
     directions = np.column_stack((np.cos(theta), np.sin(theta)))
     inside, outside = [], []
-    for level in levels:
+    for fraction_y in levels:
+        level = low[1] + fraction_y * height
         section = body.section(plane_origin=[0, level, 0], plane_normal=[0, 1, 0])
         if section is None or not section.discrete:
             raise ValueError("El torso no forma un contorno cerrado a la altura de la prenda.")
-        outline = max(
-            (poly[:, [0, 2]] for poly in section.discrete),
-            key=lambda poly: abs(np.sum(poly[:-1, 0] * poly[1:, 1] - poly[1:, 0] * poly[:-1, 1])),
-        )
+        loops = [poly[:, [0, 2]] for poly in section.discrete]
+        if style != "top" and fraction_y < .51:
+            from scipy.spatial import ConvexHull
+            points = np.vstack(loops)
+            hull = points[ConvexHull(points).vertices]
+            outline = np.vstack((hull, hull[0]))
+        else:
+            outline = max(loops, key=lambda poly: abs(
+                np.sum(poly[:-1, 0] * poly[1:, 1] - poly[1:, 0] * poly[:-1, 1])
+            ))
         center = (outline.min(axis=0) + outline.max(axis=0)) / 2
         first = outline[:-1] - center
         edges = np.diff(outline, axis=0)
@@ -262,6 +386,8 @@ def _torso_loft(body, clearance, thickness):
         if not np.isfinite(radius).all() or np.any(radius <= 0):
             raise ValueError("El torso no admite un ajuste radial continuo con esta prenda.")
         radius = np.maximum(radius, .25 * np.roll(radius, 1) + .50 * radius + .25 * np.roll(radius, -1))
+        if style != "top":
+            radius += height * .065 * np.clip((.52 - fraction_y) / .21, 0, 1)**2
         for rings, expansion in ((inside, clearance), (outside, clearance + thickness)):
             xz = center + directions * (radius + expansion * height)[:, None]
             rings.append(np.column_stack((xz[:, 0], np.full(len(theta), level), xz[:, 1])))
@@ -351,6 +477,24 @@ class ModularAvatar:
 
     def export_piece(self, node, path):
         write_new_glb(trimesh.Scene({node: self.get(node, world=True)}), path)
+
+    def export_outfit(self, path):
+        pieces = {node: self.get(node, world=True) for node in self.nodes if node.startswith("prenda-")}
+        if not pieces:
+            raise ValueError("Genera al menos una prenda para guardar el conjunto.")
+        write_new_glb(trimesh.Scene(pieces), path)
+
+    def apply_outfit(self, path):
+        incoming = ModularAvatar(trimesh.load(path, force="scene", process=False))
+        if not incoming.nodes or not all(node.startswith("prenda-") for node in incoming.nodes):
+            raise ValueError("El GLB del conjunto debe contener solamente nodos prenda-.")
+        working = ModularAvatar(self.scene, self.hidden)
+        for node in incoming.nodes:
+            mesh = incoming.get(node, world=True)
+            if node in working.nodes:
+                mesh.apply_transform(np.linalg.inv(working.scene.graph[node][0]))
+            working.upsert(node, mesh)
+        self.scene = working.scene
 
 
 def write_new_glb(scene, path):

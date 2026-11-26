@@ -1,5 +1,10 @@
 # Estado de AETHRYX Studio
 
+## 26 de noviembre de 2026 · Genesis Extended
+
+- Primer bloque de las fases 9–14. El administrador ofrece anatomía adicional, mapas PBR, conjuntos de ropa, exportación GLB articulada y un diagnóstico local de exportación. La revisión visual usa la plantilla CC0. [Cuatro vistas de prueba](test_assets/anime/genesis-extended/phase9-review.png)
+- Unity 2022.3.22f1 está instalado. La comprobación batch quedó bloqueada por la licencia inactiva, por lo que el GLB solo está validado en AETHRYX. [Registro de la operación](AETHRYX_EXTENDED_PROGRESS.md)
+
 ## 26 de noviembre de 2026 · Genesis Phase 8
 
 - **Escena → Administrador de componentes** crea una base anime con cambios de cabeza, cuello, cintura, piernas, manos y rostro sobre la malla CC0. El cuerpo conserva sus 13.380 vértices, 26.756 caras y los índices de la plantilla. Los ajustes faciales relativos cubren mandíbula, mejillas, nariz, boca, tamaño y separación de ojos, y pasan por el validador de Phase 7. La geometría sigue estática y queda pendiente adaptar los párpados y preparar rig y pesos.
