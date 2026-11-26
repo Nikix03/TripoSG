@@ -348,6 +348,7 @@ class CharacterSheetDialog(tk.Toplevel):
             return
         for item in self.regions:
             item["primary"] = item["id"] == region_id
+        region["confirmed"] = True
         self._refresh_region_tree()
         self.status.set(
             f"Vista principal: {REFERENCE_VIEW_LABELS[region['view']]}. El motor actual usará solo este recorte."

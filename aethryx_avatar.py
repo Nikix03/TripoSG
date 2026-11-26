@@ -169,8 +169,59 @@ def export_disconnected_components(model_path, output_dir):
     }
 
 
+def transform_scene_object(scene, node, values):
+    import numpy as np
+    from trimesh import transformations
+
+    if len(values) != 7 or not np.isfinite(values).all() or values[6] <= 0:
+        raise ValueError("Se requieren siete números finitos y escala positiva.")
+    if node not in scene.graph.nodes_geometry:
+        raise ValueError("El objeto seleccionado no pertenece a la escena.")
+    parent = scene.graph.transforms.parents.get(node)
+    if parent is None:
+        raise ValueError("El nodo raíz de la escena no admite una transformación local.")
+    result = scene.copy()
+    local = scene.graph.transforms.edge_data[(parent, node)]["matrix"]
+    translation = transformations.translation_matrix(values[:3])
+    rotation = transformations.euler_matrix(*np.radians(values[3:6]))
+    scale = transformations.scale_matrix(values[6])
+    geometry = scene.graph[node][1]
+    result.graph.update(
+        frame_from=parent, frame_to=node, matrix=translation @ local @ rotation @ scale,
+        geometry=geometry,
+    )
+    return result
+
+
+def _repair_regression(original, repaired):
+    import numpy as np
+
+    if (not len(repaired.faces) or not np.isfinite(repaired.vertices).all()
+            or np.any(repaired.area_faces <= 0)):
+        return "La reparación produjo geometría vacía, degenerada o no finita."
+    if original.is_watertight and not repaired.is_watertight:
+        return "La reparación abrió una superficie que estaba cerrada."
+    if original.is_winding_consistent and not repaired.is_winding_consistent:
+        return "La reparación deterioró la orientación de las caras."
+
+    def defect_lengths(mesh):
+        counts = np.bincount(mesh.edges_unique_inverse, minlength=len(mesh.edges_unique))
+        edges = np.asarray(mesh.edges_unique)
+        lengths = np.linalg.norm(mesh.vertices[edges[:, 1]] - mesh.vertices[edges[:, 0]], axis=1)
+        return np.array([lengths[counts == 1].sum(), lengths[counts > 2].sum()])
+
+    if np.any(defect_lengths(repaired) > defect_lengths(original) * 1.001 + 1e-8):
+        return "La reparación aumentó la longitud de bordes abiertos o no manifold."
+    extent = np.maximum(original.extents, 1e-6)
+    if np.any(np.abs(repaired.bounds - original.bounds) > extent * 0.05):
+        return "La reparación desplazó los límites de la geometría más de 5%."
+    return None
+
+
 def repair_mesh_copy(model_path, output_path):
     from pathlib import Path
+    import os
+    import tempfile
     import trimesh
     import numpy as np
 
@@ -178,14 +229,19 @@ def repair_mesh_copy(model_path, output_path):
     output_path = Path(output_path)
     if not path.is_file():
         return {"status": "unavailable", "reason": "Malla no encontrada"}
+    if output_path.resolve() == path.resolve():
+        return {"status": "rejected", "reason": "Selecciona una ruta distinta para la copia."}
     try:
         mesh = trimesh.load(str(path), force="mesh", process=False)
     except Exception as exc:
         return {"status": "unavailable", "reason": f"No se pudo cargar la malla: {exc}"}
 
+    if not len(mesh.faces) or not np.isfinite(mesh.vertices).all():
+        return {"status": "rejected", "reason": "La malla original está vacía o contiene coordenadas inválidas."}
     before_vertices = int(len(mesh.vertices))
     before_faces = int(len(mesh.faces))
     before_bounds = np.asarray(mesh.bounds, dtype=np.float64)
+    original = mesh
     mesh = mesh.copy()
     mesh.merge_vertices()
     face_keys = np.sort(np.asarray(mesh.faces, dtype=np.int64), axis=1)
@@ -202,6 +258,9 @@ def repair_mesh_copy(model_path, output_path):
         trimesh.repair.fill_holes(mesh)
     except Exception:
         pass
+    regression = _repair_regression(original, mesh)
+    if regression:
+        return {"status": "rejected", "reason": regression}
     after_bounds = np.asarray(mesh.bounds, dtype=np.float64)
     dimensions_before = before_bounds[1] - before_bounds[0]
     dimensions_after = after_bounds[1] - after_bounds[0]
@@ -214,9 +273,22 @@ def repair_mesh_copy(model_path, output_path):
             "status": "rejected",
             "reason": "La reparación alteró las dimensiones más de 5%; original preservada.",
         }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    trimesh.Scene([mesh]).export(str(output_path), file_type="glb")
-    validate = trimesh.load(str(output_path), force="mesh", process=False)
+    temporary = None
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(suffix=".glb", dir=output_path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+        trimesh.Scene([mesh]).export(str(temporary), file_type="glb")
+        validate = trimesh.load(str(temporary), force="mesh", process=False)
+        regression = _repair_regression(original, validate)
+        if regression:
+            return {"status": "rejected", "reason": regression}
+        os.replace(temporary, output_path)
+    except Exception as exc:
+        return {"status": "unavailable", "reason": f"No se pudo guardar la reparación: {exc}"}
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return {
         "status": "available",
         "path": str(output_path),

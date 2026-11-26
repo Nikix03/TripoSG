@@ -7,12 +7,14 @@ import numpy as np
 import trimesh
 
 from aethryx_avatar import (
+    _repair_regression,
     analyze_mesh_symmetry,
     build_avatar_scene_graph,
     export_disconnected_components,
     repair_mesh_copy,
     retopologize_mesh_copy,
     split_disconnected_components,
+    transform_scene_object,
 )
 from studio_project import save_project, load_project
 
@@ -33,7 +35,9 @@ class AvatarSceneGraphTests(unittest.TestCase):
             source.add_geometry(pair, geom_name="pair", node_name="first")
             source.graph.update(
                 frame_to="second", geometry="pair",
-                matrix=trimesh.transformations.translation_matrix([0, 5, 1]),
+                matrix=trimesh.transformations.translation_matrix([0, 5, 1])
+                @ trimesh.transformations.rotation_matrix(np.pi / 2, [0, 0, 1])
+                @ trimesh.transformations.scale_matrix(2),
             )
             source.export(str(path), file_type="glb")
             original = path.read_bytes()
@@ -42,22 +46,43 @@ class AvatarSceneGraphTests(unittest.TestCase):
             components = analysis["components"]
             self.assertEqual(len(components), 4)
             self.assertEqual(len({component["id"] for component in components}), 4)
-            self.assertEqual(sorted(tuple(c["bounds"][0]) for c in components), [
-                (0, 0, 0), (0, 5, 1), (2, 0, 0), (2, 5, 1),
-            ])
+            np.testing.assert_allclose(sorted(tuple(c["bounds"][0]) for c in components), [
+                (-2, 5, 1), (-2, 9, 1), (0, 0, 0), (2, 0, 0),
+            ], atol=1e-7)
 
             result = export_disconnected_components(path, folder)
             self.assertEqual(result["status"], "available", result)
             scene = trimesh.load(result["scene_path"], force="scene", process=False)
             self.assertEqual(len(scene.graph.nodes_geometry), 4)
+            source_reopened = trimesh.load(path, force="scene", process=False)
             for report, exported in zip(components, result["components"]):
                 piece = trimesh.load(exported["path"], force="mesh", process=False)
                 self.assertEqual(len(piece.faces), 1)
-                np.testing.assert_allclose(piece.bounds, report["bounds"])
+                np.testing.assert_allclose(piece.bounds, report["bounds"], atol=1e-7)
+                node = Path(exported["path"]).stem
+                source_node = report["id"].rsplit("-component-", 1)[0]
+                transform = source_reopened.graph[source_node][0]
+                np.testing.assert_allclose(scene.graph[node][0], transform, atol=1e-7)
             repeat = export_disconnected_components(path, folder)
             self.assertEqual(repeat["status"], "available", repeat)
             self.assertNotEqual(repeat["scene_path"], result["scene_path"])
             self.assertEqual(path.read_bytes(), original)
+
+    def test_transform_preserves_other_instance_and_source(self):
+        scene = trimesh.Scene()
+        scene.add_geometry(trimesh.creation.box(), node_name="first", geom_name="box")
+        scene.graph.update(frame_to="second", geometry="box", matrix=np.eye(4))
+        edited = transform_scene_object(scene, "second", [1, 2, 3, 0, 0, 90, 2])
+        expected = [[0, -2, 0, 1], [2, 0, 0, 2], [0, 0, 2, 3], [0, 0, 0, 1]]
+        np.testing.assert_allclose(edited.graph["second"][0], expected, atol=1e-7)
+        np.testing.assert_array_equal(edited.graph["first"][0], np.eye(4))
+        np.testing.assert_array_equal(scene.graph["second"][0], np.eye(4))
+
+    def test_repair_rejects_a_new_hole_even_with_identical_bounds(self):
+        source = trimesh.creation.box()
+        holed = source.submesh([np.arange(1, len(source.faces))], repair=False)[0]
+        np.testing.assert_array_equal(source.bounds, holed.bounds)
+        self.assertTrue(_repair_regression(source, holed))
 
     def test_scene_graph_has_humanoid_required_nodes(self):
         nodes = build_avatar_scene_graph()

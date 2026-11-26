@@ -1,5 +1,4 @@
 import os
-import copy
 import shutil
 import subprocess
 import sys
@@ -20,7 +19,7 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from character_sheet import (
     REFERENCE_VIEW_LABELS,
     crop_reference,
-    select_primary_region,
+    generation_reference,
     validate_reference_regions,
 )
 from character_sheet_dialog import CharacterSheetDialog
@@ -35,6 +34,7 @@ from aethryx_avatar import (
     export_disconnected_components,
     repair_mesh_copy,
     retopologize_mesh_copy,
+    transform_scene_object,
 )
 
 from studio_metadata import (
@@ -194,6 +194,7 @@ class AethryxStudio(tk.Tk):
         edit_menu = tk.Menu(self.main_menu, **menu_colors)
         edit_menu.add_command(label="Deshacer escena", accelerator="Ctrl+Z", command=self.undo_scene_change)
         edit_menu.add_command(label="Rehacer escena", accelerator="Ctrl+Y", command=self.redo_scene_change)
+        edit_menu.add_command(label="Transformar objeto seleccionado...", command=self.transform_selected_object)
         edit_menu.add_separator()
         for label in ("Duplicar objeto - proximo", "Eliminar objeto - proximo", "Preferencias - proximo"):
             edit_menu.add_command(label=label, state="disabled")
@@ -504,6 +505,8 @@ class AethryxStudio(tk.Tk):
         return True
 
     def _clear_scene(self):
+        self.scene_history.clear()
+        self.scene_future.clear()
         self.load_request_id += 1
         self.model_loading = False
         self.loaded_scene = None
@@ -554,8 +557,6 @@ class AethryxStudio(tk.Tk):
                 self.reference_regions,
                 self.model_stats,
             )
-            if any(region["primary"] for region in self.reference_regions):
-                self.reference_regions = select_primary_region(self.reference_regions)
             self.image_path.set(data["image"]); self.output_path.set(data["output"])
             for key in ("steps", "faces", "seed", "guidance"):
                 getattr(self, key).set(data["settings"][key])
@@ -643,11 +644,6 @@ class AethryxStudio(tk.Tk):
                 region["primary"] = False
         try:
             self.reference_regions = validate_reference_regions(other_sources + dialog.result)
-            if any(region["primary"] for region in self.reference_regions):
-                self.reference_regions = select_primary_region(
-                    self.reference_regions,
-                    preferred_view="front",
-                )
             self.avatar_nodes = build_avatar_scene_graph(
                 self.reference_regions,
                 self.model_stats,
@@ -689,7 +685,7 @@ class AethryxStudio(tk.Tk):
         if path:
             self.load_model(path)
 
-    def load_model(self, path):
+    def load_model(self, path, *, edit=False):
         if not os.path.isfile(path):
             messagebox.showerror("No se encontro el archivo", path)
             return
@@ -702,9 +698,9 @@ class AethryxStudio(tk.Tk):
         self.model_loading = True
         self.status.set(f"Cargando malla: {os.path.basename(path)}")
         self.append_log(f"Importando malla: {path}")
-        threading.Thread(target=self._prepare_model, args=(request_id, path), daemon=True).start()
+        threading.Thread(target=self._prepare_model, args=(request_id, path, edit), daemon=True).start()
 
-    def _prepare_model(self, request_id, path):
+    def _prepare_model(self, request_id, path, edit=False):
         try:
             scene = trimesh.load(path, force="scene")
             if isinstance(scene, trimesh.Trimesh):
@@ -757,7 +753,7 @@ class AethryxStudio(tk.Tk):
                 "watertight": all(mesh.is_watertight for mesh in geometries),
                 "bounds": bounds,
             }
-            self.after(0, lambda: self._show_model(request_id, path, scene, parts, stats))
+            self.after(0, lambda: self._finish_model_load(request_id, path, scene, parts, stats, edit))
         except Exception as exc:
             self.after(0, lambda error=str(exc): self._model_load_failed(request_id, error))
 
@@ -795,6 +791,16 @@ class AethryxStudio(tk.Tk):
         mesh_set.add_mesh(pymeshlab.Mesh(vertex_matrix=vertices, face_matrix=faces))
         mesh_set.meshing_decimation_quadric_edge_collapse(targetfacenum=MAX_PREVIEW_FACES)
         return mesh_set
+
+    def _finish_model_load(self, request_id, path, scene, parts, stats, edit):
+        if request_id != self.load_request_id:
+            return
+        if edit and self.loaded_scene is not None:
+            self.checkpoint_scene_change()
+        else:
+            self.scene_history.clear()
+            self.scene_future.clear()
+        self._show_model(request_id, path, scene, parts, stats)
 
     def _show_model(self, request_id, path, scene, parts, stats):
         if request_id != self.load_request_id:
@@ -1171,7 +1177,7 @@ class AethryxStudio(tk.Tk):
             f"Escena editable: {result['scene_path']}\n"
             "La asignación anatómica permanece pendiente.",
         )
-        self.load_model(result["scene_path"])
+        self.load_model(result["scene_path"], edit=True)
 
     def show_avatar_scene_graph(self):
         nodes = build_avatar_scene_graph(self.reference_regions, self.model_stats)
@@ -1360,40 +1366,75 @@ class AethryxStudio(tk.Tk):
         if os.path.isfile(README_PATH):
             os.startfile(README_PATH)
 
+    def _scene_snapshot(self):
+        return (
+            self.current_model_path, self.loaded_scene, self.model_parts, self.model_stats,
+            self.scene_tree.selection(), [artist.get_visible() for artist in self.mesh_artists],
+        )
+
     def checkpoint_scene_change(self):
-        if self.loaded_scene is None:
-            return
-        self.scene_history.append(copy.deepcopy(self.loaded_scene))
-        if len(self.scene_history) > 20:
-            self.scene_history.pop(0)
+        self.scene_history.append(self._scene_snapshot())
+        del self.scene_history[:-20]
         self.scene_future.clear()
 
     def undo_scene_change(self):
-        if not self.scene_history:
-            self.status.set("No hay cambios de escena para deshacer.")
-            return
-        if self.loaded_scene is not None:
-            self.scene_future.append(copy.deepcopy(self.loaded_scene))
-        self.loaded_scene = self.scene_history.pop()
-        self._refresh_scene_after_history()
+        self._restore_scene_change(self.scene_history, self.scene_future, "deshacer")
 
     def redo_scene_change(self):
-        if not self.scene_future:
-            self.status.set("No hay cambios de escena para rehacer.")
-            return
-        if self.loaded_scene is not None:
-            self.scene_history.append(copy.deepcopy(self.loaded_scene))
-        self.loaded_scene = self.scene_future.pop()
-        self._refresh_scene_after_history()
+        self._restore_scene_change(self.scene_future, self.scene_history, "rehacer")
 
-    def _refresh_scene_after_history(self):
+    def _restore_scene_change(self, source, destination, action):
+        if not self._workspace_available():
+            return
+        if not source:
+            self.status.set(f"No hay cambios de escena para {action}.")
+            return
+        destination.append(self._scene_snapshot())
+        path, scene, parts, stats, selection, visibility = source.pop()
+        self._show_model(self.load_request_id, path, scene, parts, stats)
+        self.scene_tree.selection_set(selection)
+        for index, visible in enumerate(visibility):
+            self.mesh_artists[index].set_visible(visible)
+            label = parts[index]["node"]
+            self.scene_tree.item(self.part_to_tree[index], text=f"[{'x' if visible else ' '}] {label}")
+        self._update_object_inspector()
+        self.model_canvas.draw_idle()
+        self.status.set("Cambio de escena restaurado.")
+
+    def transform_selected_object(self):
+        if not self._workspace_available():
+            return
+        selected = self._selected_part_indices()
+        if len(selected) != 1:
+            self.status.set("Selecciona un objeto para transformarlo.")
+            return
+        value = simpledialog.askstring(
+            "Transformar objeto",
+            "Introduce 7 valores separados por espacios. Traslación X Y Z en el "
+            "sistema padre, rotación local X Y Z en grados y escala uniforme local. "
+            "La edición se guarda como una escena GLB estática.",
+            initialvalue="0 0 0 0 0 0 1", parent=self,
+        )
+        if value is None:
+            return
         try:
-            if self.current_model_path and os.path.isfile(self.current_model_path):
-                self.load_model(self.current_model_path)
-            self.status.set("Cambio de escena restaurado.")
-        except Exception as exc:
-            self.status.set("No se pudo restaurar el cambio de escena.")
-            self.append_log(str(exc))
+            node = self.model_parts[selected[0]]["node"]
+            scene = transform_scene_object(self.loaded_scene, node, [float(v) for v in value.split()])
+            path = filedialog.asksaveasfilename(
+                title="Guardar nueva versión de la escena", defaultextension=".glb",
+                filetypes=[("GLB", "*.glb")], parent=self,
+            )
+            if not path:
+                return
+            if not path.lower().endswith(".glb"):
+                raise ValueError("La salida debe ser GLB.")
+            glb = scene.export(file_type="glb")
+            with open(path, "xb") as file:
+                file.write(glb)
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Transformar objeto", str(exc))
+            return
+        self.load_model(path, edit=True)
 
     def reset_workspace(self):
         self.geometry("1420x920")
@@ -1426,7 +1467,7 @@ class AethryxStudio(tk.Tk):
     def generate(self):
         if not self._workspace_available():
             return
-        image = self.image_path.get().strip()
+        image, primary_region = generation_reference(self.reference_regions, self.image_path.get().strip())
         output = self.output_path.get().strip()
         if not os.path.isfile(image):
             messagebox.showerror("Imagen no valida", "Selecciona un archivo de imagen existente.")
@@ -1455,7 +1496,6 @@ class AethryxStudio(tk.Tk):
         matching_regions = [
             region for region in self.reference_regions if self._same_path(region["path"], image)
         ]
-        primary_region = next((region for region in matching_regions if region["primary"]), None)
         if matching_regions and primary_region is None:
             if not messagebox.askyesno(
                 "Vista principal no definida",

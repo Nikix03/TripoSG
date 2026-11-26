@@ -8,6 +8,7 @@ from character_sheet import (
     crop_reference,
     normalize_bbox,
     select_primary_region,
+    generation_reference,
     validate_bbox,
     validate_reference_regions,
 )
@@ -120,6 +121,13 @@ class CharacterSheetTests(unittest.TestCase):
         self.assertTrue(all(type(value) is float for value in result))
         for actual, expected in zip(result, (0.1, 0.2, 0.8, 0.9)):
             self.assertAlmostEqual(actual, expected, places=6)
+
+    def test_explicit_primary_is_used_even_when_another_source_is_active(self):
+        primary = {"path": "side.png", "primary": True, "confirmed": True}
+        self.assertEqual(generation_reference([primary], "front.png"), ("side.png", primary))
+        legacy = dict(primary, confirmed=False)
+        self.assertEqual(generation_reference([legacy], "front.png"), ("side.png", legacy))
+        self.assertEqual(generation_reference([], "front.png"), ("front.png", None))
 
     def test_primary_selection_across_multiple_images_is_deterministic(self):
         with tempfile.TemporaryDirectory() as folder:

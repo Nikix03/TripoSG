@@ -188,6 +188,12 @@ def select_primary_region(regions, preferred_view="front"):
     return validate_reference_regions(result)
 
 
+def generation_reference(regions, fallback_path):
+    """Use the explicitly approved crop across all reference images."""
+    primary = next((r for r in regions if r["primary"]), None)
+    return (primary["path"], primary) if primary else (fallback_path, None)
+
+
 def crop_reference(source, bbox):
     x0, y0, x1, y1 = validate_bbox(bbox)
     with Image.open(source) as image:
