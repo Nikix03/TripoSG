@@ -9,9 +9,11 @@ from PIL import Image
 import trimesh
 
 from aethryx_anatomy import (
-    anime_proportions, export_studio_reconstruction, orthographic_projection,
+    PROPORTIONS, anime_proportions, blocking_geometry_issues, export_studio_reconstruction,
+    load_body_template, orthographic_projection,
     partition_surfaces, reconstruct, reconstruct_data, validate_deformation,
 )
+from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
 
 
 class ReconstructionTests(unittest.TestCase):
@@ -27,8 +29,27 @@ class ReconstructionTests(unittest.TestCase):
         dialog = AnatomyDialog(root)
         self.assertEqual(dialog.view, "front")
         self.assertEqual(tuple(dialog.views), ("front", "side", "back"))
+        self.assertEqual(len(dialog.pose_links), 13)
+        self.assertEqual(dialog.template_path, str(BUNDLED_BODY))
         self.assertIsNone(dialog.result)
         dialog.destroy()
+
+    def test_bundled_profiles_use_valid_bilateral_anchors_and_all_controls_move_vertices(self):
+        mesh = load_body_template(BUNDLED_BODY)
+        points = mesh.vertices
+        self.assertEqual(len(mesh.faces), 26756)
+        self.assertTrue(mesh.is_watertight)
+        self.assertEqual(len(set(POSE_VERTICES.values())), 13)
+        for left in (11, 13, 15, 23, 25, 27):
+            np.testing.assert_allclose(
+                points[POSE_VERTICES[left]] * [-1, 1, 1], points[POSE_VERTICES[left + 1]], atol=1e-6,
+            )
+        np.testing.assert_array_equal(anime_proportions(points, mesh.bounds, {}), points)
+        for key in PROPORTIONS:
+            with self.subTest(proportion=key):
+                result = anime_proportions(points, mesh.bounds, {key: 1.1})
+                self.assertGreater(np.max(abs(result - points)), 1e-3)
+        self.assertEqual(len(BODY_PROFILES), 3)
 
     def test_visual_calibration_aligns_height_and_all_view_axes(self):
         bounds = np.array([[-1, 2, -0.5], [1, 4, 0.5]])
@@ -42,7 +63,13 @@ class ReconstructionTests(unittest.TestCase):
         vertices = [[-2, 0, 0], [2, 0, 0], [0, 2, 0],
                     [-0.5, 1, -1], [0.5, 1, -1], [0, 1, 1]]
         crossed = trimesh.Trimesh(vertices=vertices, faces=[[0, 1, 2], [3, 4, 5]], process=False)
-        self.assertEqual(validate_deformation(crossed, crossed)["intersection_pairs_up_to_100"], 1)
+        defective = validate_deformation(crossed, crossed)
+        self.assertEqual(defective["intersection_pairs_up_to_100"], 1)
+        self.assertEqual(len(blocking_geometry_issues(defective)), 2)
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(ValueError, "autointersecciones"):
+                export_studio_reconstruction(folder, {}, crossed, trimesh.Scene(), defective, {})
+            self.assertFalse(list(Path(folder).iterdir()))
         sphere = trimesh.creation.icosphere(subdivisions=1)
         report = validate_deformation(sphere, sphere)
         self.assertEqual(report["intersection_pairs_up_to_100"], 0)
@@ -112,6 +139,9 @@ class ReconstructionTests(unittest.TestCase):
             self.assertTrue(full_body.is_watertight)
             self.assertEqual(len(trimesh.load(separate_patches, force="scene").geometry), 2)
             self.assertTrue((body.parent / "validacion.json").is_file())
+            components = json.loads((body.parent / "componentes.json").read_text(encoding="utf-8"))
+            self.assertEqual([entry["role"] for entry in components], ["body", "surface-patch"])
+            self.assertEqual(len(trimesh.load(body.parent / components[1]["file"], force="mesh").faces), 2)
 
             views["side"]["projection"] = matrices["front"]
             data = json.loads(manifest.read_text(encoding="utf-8"))

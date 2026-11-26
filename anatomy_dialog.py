@@ -12,10 +12,17 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageTk
 
 from aethryx_anatomy import (
-    VIEWS, export_studio_reconstruction, load_body_template, orthographic_projection,
+    PROPORTIONS, VIEWS, blocking_geometry_issues, export_studio_reconstruction,
+    load_body_template, orthographic_projection,
     reconstruct_data,
 )
 from aethryx_engines import suggest_anatomical_points
+from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
+from aethryx_reference import (
+    SEMANTIC_COLORS, compare_silhouette, reference_silhouette, segment_anime_reference,
+    silhouette_calibration,
+)
+from proportion_dialog import ProportionDialog
 
 
 VIEW_LABELS = dict(zip(VIEWS, ("Frontal", "Lateral", "Posterior")))
@@ -41,6 +48,7 @@ class AnatomyDialog(tk.Toplevel):
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.result = None
+        self.profile = tk.StringVar(value="Anime neutro")
         self.template_path = None
         self.template = None
         self.indices = []
@@ -48,6 +56,9 @@ class AnatomyDialog(tk.Toplevel):
         self.views = {name: {"points": {}} for name in VIEWS}
         self.palette = {}
         self.images = {}
+        self.comparisons = {}
+        self.comparison_mode = tk.BooleanVar(value=False)
+        self.segmenter = None
         self.next_calibration = None
         self.busy = False
         self.photo = {}
@@ -58,8 +69,10 @@ class AnatomyDialog(tk.Toplevel):
         self.view_label = tk.StringVar(value=VIEW_LABELS["front"])
         self.pose_label = tk.StringVar()
         self.status = tk.StringVar(value="Carga una plantilla corporal y las tres imágenes.")
-        self.factors = {name: tk.StringVar(value="1.00") for name in ("head", "shoulders", "legs")}
+        self.factors = {name: tk.StringVar(value="1.00") for name in PROPORTIONS}
         self._build()
+        if BUNDLED_BODY.is_file():
+            self._use_profile()
 
     @property
     def view(self):
@@ -75,6 +88,7 @@ class AnatomyDialog(tk.Toplevel):
             ("Cargar imagen…", self._load_image),
             ("Máscara RGB…", self._load_mask),
             ("Paleta…", self._edit_palette),
+            ("Segmentar ONNX…", self._segment_current),
         ):
             ttk.Button(toolbar, text=label, command=command).pack(side="left", padx=3)
         ttk.Label(toolbar, textvariable=self.status, wraplength=360).pack(side="left", padx=10)
@@ -84,6 +98,10 @@ class AnatomyDialog(tk.Toplevel):
                               state="readonly", width=11)
         choose.pack(side="left")
         choose.bind("<<ComboboxSelected>>", self._change_view)
+        self.profile_combo = ttk.Combobox(views, state="readonly", width=16, textvariable=self.profile,
+                                          values=[*BODY_PROFILES, "Personalizado"])
+        self.profile_combo.pack(side="left", padx=4)
+        self.profile_combo.bind("<<ComboboxSelected>>", self._select_profile)
         ttk.Button(views, text="Marcar suelo y coronilla", command=self._start_calibration).pack(side="left", padx=6)
         self.profile_toggle = ttk.Checkbutton(views, text="Perfil opuesto", variable=self.side,
                                               command=self._reverse_side)
@@ -92,6 +110,7 @@ class AnatomyDialog(tk.Toplevel):
         ttk.Checkbutton(views, text="Proyectar vértices", variable=self.overlay,
                         command=self._redraw).pack(side="left")
         ttk.Button(views, text="Sugerir puntos (MediaPipe)", command=self._suggest).pack(side="left", padx=6)
+        ttk.Button(views, text="Alinear y detectar vistas", command=self._auto_align).pack(side="left", padx=6)
 
         panels = ttk.Panedwindow(self, orient="horizontal")
         panels.pack(fill="both", expand=True, padx=8)
@@ -121,12 +140,9 @@ class AnatomyDialog(tk.Toplevel):
         self.pose_combo.pack(fill="x", pady=(4, 0))
         self.pose_combo.bind("<<ComboboxSelected>>", self._link_pose)
         ttk.Label(point_actions, text="Correspondencia para sugerencias").pack()
-        proportion_box = ttk.Labelframe(controls, text="Proporciones  ·  0,75 a 1,35", padding=5)
-        proportion_box.pack(side="left", padx=8)
-        for row, (key, label) in enumerate(zip(self.factors, ("Ancho de cabeza", "Ancho de hombros", "Largo de piernas"))):
-            ttk.Label(proportion_box, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Spinbox(proportion_box, from_=0.75, to=1.35, increment=0.05,
-                        textvariable=self.factors[key], width=6).grid(row=row, column=1, padx=5)
+        ttk.Button(controls, text="Proporciones 3D…", command=self._proportions).pack(side="left", padx=6)
+        ttk.Checkbutton(controls, text="Comparar siluetas", variable=self.comparison_mode,
+                        command=self._redraw).pack(side="left")
         ttk.Button(controls, text="Reconstruir y validar…", command=self._fit).pack(side="right")
 
     def _close(self):
@@ -146,17 +162,60 @@ class AnatomyDialog(tk.Toplevel):
         except Exception as exc:
             self._error(exc)
             return
-        if self.indices and not messagebox.askyesno(
+        if any(view["points"] or "projection" in view for view in self.views.values()) and not messagebox.askyesno(
                 "Cambiar plantilla", "¿Reiniciar los vértices y la calibración?", parent=self):
             return
-        self.template_path, self.template = path, mesh
+        self.profile.set("Personalizado")
+        self._replace_template(path, mesh)
+
+    def _replace_template(self, path, mesh):
+        self.template_path, self.template = str(path), mesh
         self.indices.clear()
         self.pose_links.clear()
         for view in self.views.values():
             view["points"].clear()
             view.pop("projection", None)
             view.pop("calibration", None)
+        self._invalidate_comparison()
         self._change_view()
+
+    def _select_profile(self, _event=None):
+        if not self.busy and self.profile.get() != "Personalizado":
+            self._use_profile()
+
+    def _use_profile(self):
+        profile = self.profile.get()
+        if self.template_path != str(BUNDLED_BODY):
+            if any(view["points"] or "projection" in view for view in self.views.values()) and not messagebox.askyesno(
+                    "Cambiar plantilla", "¿Reiniciar las correspondencias y la calibración?", parent=self):
+                self.profile.set("Personalizado")
+                return
+            try:
+                template = load_body_template(BUNDLED_BODY)
+            except Exception as exc:
+                self.profile.set("Personalizado")
+                self._error(exc)
+                return
+            self._replace_template(BUNDLED_BODY, template)
+            self.indices = list(POSE_VERTICES.values())
+            self.pose_links = {vertex: joint for joint, vertex in POSE_VERTICES.items()}
+        for key, value in self.factors.items():
+            value.set(BODY_PROFILES[profile].get(key, 1))
+        self._invalidate_comparison()
+        self._refresh_points()
+        self.status.set("Perfil cargado. Añade las tres referencias y usa la alineación automática.")
+
+    def _proportions(self):
+        if self.busy or self.template is None:
+            return
+        dialog = ProportionDialog(self, self.template, {key: float(var.get()) for key, var in self.factors.items()})
+        self.wait_window(dialog)
+        self.grab_set()
+        if dialog.result:
+            for key, value in dialog.result.items():
+                self.factors[key].set(value)
+            self._invalidate_comparison()
+            self._redraw()
 
     def _load_image(self):
         if self.busy:
@@ -175,6 +234,7 @@ class AnatomyDialog(tk.Toplevel):
             return
         self.images[self.view] = preview
         self.views[self.view] = {"image": path, "points": {}}
+        self._invalidate_comparison()
         self._change_view()
 
     def _load_mask(self):
@@ -190,7 +250,79 @@ class AnatomyDialog(tk.Toplevel):
                 self._error(exc)
                 return
             self.views[self.view]["mask"] = path
+            self._invalidate_comparison()
             self.status.set(f"Máscara cargada en {self.view_label.get()}.")
+
+    def _segment_current(self):
+        view = self.view
+        if self.busy or view not in self.images:
+            return
+        if self.segmenter is None:
+            model = filedialog.askopenfilename(parent=self, filetypes=[("ONNX multiclase", "*.onnx")])
+            if not model:
+                return
+            raw = simpledialog.askstring(
+                "Canales del modelo", "Introduce las clases en el orden de salida del modelo.",
+                initialvalue=",".join(SEMANTIC_COLORS), parent=self,
+            )
+            if raw is None:
+                return
+            self.segmenter = model, [label.strip().lower() for label in raw.split(",")]
+        image = self.images[view]
+        def accept(mask):
+            self.status.set(f"Máscara propuesta para {VIEW_LABELS[view]}.")
+            preview = tk.Toplevel(self)
+            preview.title("Revisar segmentación multiclase")
+            preview.transient(self)
+            preview.grab_set()
+            scaled = mask.copy()
+            scaled.thumbnail((620, 560), Image.Resampling.NEAREST)
+            photo = ImageTk.PhotoImage(scaled)
+            label = ttk.Label(preview, image=photo)
+            label.pack(padx=8, pady=8)
+            legend = ttk.Frame(preview)
+            legend.pack()
+            for key, caption in zip(SEMANTIC_COLORS, ("Fondo", "Cuerpo", "Rostro", "Cabello", "Ropa", "Accesorios")):
+                if key != "background":
+                    color = "#%02x%02x%02x" % SEMANTIC_COLORS[key]
+                    tk.Label(legend, text=caption, bg=color, fg="#11141b", padx=6).pack(side="left")
+            def save():
+                palette = {name: list(color) for name, color in SEMANTIC_COLORS.items() if name != "background"}
+                used = {tuple(color): name for name, color in palette.items()}
+                if any((name in palette and tuple(color) != tuple(palette[name]))
+                       or (tuple(color) in used and used[tuple(color)] != name)
+                       for name, color in self.palette.items()):
+                    self._error(ValueError("La paleta existente entra en conflicto con la segmentación ONNX."))
+                    return
+                path = filedialog.asksaveasfilename(parent=preview, defaultextension=".png",
+                                                     filetypes=[("Máscara RGB", "*.png")])
+                if path:
+                    try:
+                        reference_paths = {Path(state["image"]).resolve() for state in self.views.values()
+                                           if "image" in state}
+                        if Path(path).resolve() in reference_paths:
+                            raise ValueError("Guarda la máscara en un archivo separado de la referencia.")
+                        mask.save(path, format="PNG")
+                    except (OSError, ValueError) as exc:
+                        self._error(exc)
+                        return
+                    self.palette.update(palette)
+                    self.views[view]["mask"] = path
+                    self._invalidate_comparison()
+                    self.status.set(f"Máscara multiclase aceptada para {VIEW_LABELS[view]}.")
+                    preview.destroy()
+            ttk.Button(preview, text="Guardar y usar máscara", command=save).pack(pady=(0, 8))
+            self.wait_window(preview)
+            self.grab_set()
+        model, labels = self.segmenter
+        # Prompt again on the next request if the selected provider fails.
+        def segment():
+            return segment_anime_reference(image, model, labels)
+        self.segmenter = None
+        def finished(mask):
+            self.segmenter = model, labels
+            accept(mask)
+        self._work("Segmentando la referencia con ONNX en CPU…", segment, finished)
 
     def _edit_palette(self):
         if self.busy:
@@ -203,6 +335,7 @@ class AnatomyDialog(tk.Toplevel):
                 if not isinstance(palette, dict):
                     raise ValueError("Usa un objeto JSON para la paleta.")
                 self.palette = palette
+                self._invalidate_comparison()
             except ValueError as exc:
                 self._error(exc)
 
@@ -240,6 +373,7 @@ class AnatomyDialog(tk.Toplevel):
         view = self.views[self.view]
         view["calibration"] = [center, crown]
         view["projection"] = projection.tolist()
+        self._invalidate_comparison()
         self.status.set(f"{self.view_label.get()} calibrada. Revisa la alineación y los puntos.")
 
     def _selected(self):
@@ -273,6 +407,7 @@ class AnatomyDialog(tk.Toplevel):
         selected = self._selected()
         if selected is not None and not self.busy:
             self.views[self.view]["points"][self.indices[selected]] = (None, False)
+            self._invalidate_comparison()
             self._refresh_points(selected)
 
     def _remove_point(self):
@@ -283,6 +418,7 @@ class AnatomyDialog(tk.Toplevel):
         self.pose_links.pop(vertex, None)
         for view in self.views.values():
             view["points"].pop(vertex, None)
+        self._invalidate_comparison()
         self._refresh_points(min(selected, len(self.indices) - 1))
 
     def _link_pose(self, _event=None):
@@ -299,6 +435,7 @@ class AnatomyDialog(tk.Toplevel):
             for view in self.views.values():
                 if view["points"].get(vertex, (None, False))[1]:
                     view["points"].pop(vertex)
+            self._invalidate_comparison()
             self._refresh_points(selected)
 
     def _image_click(self, event):
@@ -322,6 +459,7 @@ class AnatomyDialog(tk.Toplevel):
             self.next_calibration = None
         elif self._selected() is not None:
             self.views[self.view]["points"][self.indices[self._selected()]] = (point, False)
+            self._invalidate_comparison()
         self._refresh_points(self._selected())
 
     def _template_click(self, event):
@@ -336,6 +474,7 @@ class AnatomyDialog(tk.Toplevel):
         vertex = int(candidates[np.argmax(depth[candidates])])
         if vertex not in self.indices:
             self.indices.append(vertex)
+            self._invalidate_comparison()
         self._refresh_points(self.indices.index(vertex))
 
     def _redraw(self, _event=None):
@@ -373,7 +512,16 @@ class AnatomyDialog(tk.Toplevel):
                 if point is not None:
                     px, py = point
                     self._draw_point(image_canvas, x + px * scale, y + py * scale, order, suggested)
-        if self.template is not None:
+        if self.comparison_mode.get() and self.view in self.comparisons:
+            comparison = self.comparisons[self.view].copy()
+            comparison.thumbnail((max(1, template_canvas.winfo_width()), max(1, template_canvas.winfo_height())),
+                                 Image.Resampling.LANCZOS)
+            self.photo["comparison"] = ImageTk.PhotoImage(comparison)
+            template_canvas.create_image(
+                template_canvas.winfo_width() / 2, template_canvas.winfo_height() / 2,
+                image=self.photo["comparison"],
+            )
+        elif self.template is not None:
             width, height = template_canvas.winfo_width(), template_canvas.winfo_height()
             bounds = self.template.bounds
             axis = 2 if self.view == "side" else 0
@@ -425,28 +573,88 @@ class AnatomyDialog(tk.Toplevel):
                 if joint in found and vertex not in points
             }
             points.update(additions)
+            if additions:
+                self._invalidate_comparison()
             self._refresh_points(self._selected())
             self.status.set(f"{len(additions)} sugerencias en {VIEW_LABELS[view]}. Corrige con un clic.")
         self._work("Detectando puntos con MediaPipe…", lambda: suggest_anatomical_points(image), apply_suggestions)
 
+    def _invalidate_comparison(self):
+        self.comparisons.clear()
+        self.comparison_mode.set(False)
+
+    def _auto_align(self):
+        if self.busy or self.template is None or not self.images:
+            return
+        sources = {
+            name: (image, self.views[name]["image"], self.views[name].get("mask"))
+            for name, image in self.images.items()
+        }
+        def detect():
+            results = {}
+            for name, (image, source, mask_path) in sources.items():
+                try:
+                    found = suggest_anatomical_points(source)
+                except (OSError, ImportError, RuntimeError, ValueError):
+                    found = {}
+                mask = None
+                if mask_path:
+                    with Image.open(mask_path) as loaded:
+                        mask = loaded.convert("RGB")
+                results[name] = silhouette_calibration(reference_silhouette(image, mask), found), found
+            return results
+        def apply(results):
+            aligned = added = 0
+            for name, (calibration, found) in results.items():
+                view = self.views[name]
+                if calibration and "projection" not in view:
+                    center, crown = calibration
+                    view["calibration"] = [center, crown]
+                    view["projection"] = orthographic_projection(
+                        name, center, center[1], crown, self.template.bounds,
+                        side=-1 if self.side.get() else 1,
+                    ).tolist()
+                    aligned += 1
+                for vertex, joint in self.pose_links.items():
+                    if joint in found and vertex not in view["points"]:
+                        view["points"][vertex] = (found[joint], True)
+                        added += 1
+            if aligned or added:
+                self._invalidate_comparison()
+            self._refresh_points(self._selected())
+            self.status.set(f"{aligned} vistas alineadas · {added} puntos sugeridos. Revisa o calibra manualmente.")
+        self._work("Analizando siluetas y puntos anatómicos…", detect, apply)
+
     def _build_manifest(self, require_ready):
         if not self.template_path:
             raise ValueError("Carga una plantilla corporal.")
+        indices = self.indices.copy()
+        bundled = self.template_path == str(BUNDLED_BODY)
+        if require_ready and bundled:
+            visible = {
+                name: {vertex for vertex, (point, _) in state["points"].items() if point is not None}
+                for name, state in self.views.items()
+            }
+            usable = visible["side"] & (visible["front"] | visible["back"])
+            indices = [vertex for vertex in indices if vertex in usable or vertex not in POSE_VERTICES.values()]
         views = {}
         for name, state in self.views.items():
             if require_ready and ("image" not in state or "projection" not in state):
                 raise ValueError(f"Carga y calibra la vista {VIEW_LABELS[name].lower()}.")
             view = {key: deepcopy(value) for key, value in state.items() if key != "points"}
             view["landmarks"] = [
-                state["points"].get(vertex, (None, False))[0] or [None, None] for vertex in self.indices
+                state["points"].get(vertex, (None, False))[0] or [None, None] for vertex in indices
             ]
             view["suggested"] = [vertex for vertex, (_, proposed) in state["points"].items() if proposed]
             view["hidden"] = [vertex for vertex, (point, _) in state["points"].items() if point is None]
             views[name] = view
         return {
-            "template": self.template_path, "vertex_indices": self.indices.copy(), "views": views,
+            "template": self.template_path, "vertex_indices": indices, "views": views,
             "palette": deepcopy(self.palette), "pose_links": self.pose_links.copy(),
             "side_opposite": self.side.get(),
+            "profile": self.profile.get(),
+            "bundled_template": bundled,
+            "smoothing": .008 if bundled else 0,
             "proportions": {key: float(var.get().replace(",", ".")) for key, var in self.factors.items()},
         }
 
@@ -474,7 +682,8 @@ class AnatomyDialog(tk.Toplevel):
 
     def _restore_setup(self, path):
         data = json.loads(path.read_text(encoding="utf-8"))
-        template_path = str((path.parent / data["template"]).resolve())
+        template_path = str(BUNDLED_BODY if data.get("bundled_template")
+                            else (path.parent / data["template"]).resolve())
         template = load_body_template(template_path)
         indices = data["vertex_indices"]
         if (template.extents[1] <= 0 or len(indices) != len(set(indices))
@@ -514,10 +723,13 @@ class AnatomyDialog(tk.Toplevel):
         self.template_path, self.template = template_path, template
         self.indices, self.views, self.images = indices, views, images
         self.palette = data.get("palette", {})
+        profile = data.get("profile")
+        self.profile.set(profile if template_path == str(BUNDLED_BODY) and profile in BODY_PROFILES else "Personalizado")
         self.pose_links = {vertex: joint for vertex, joint in pose_links.items() if vertex in indices}
         self.side.set(data.get("side_opposite", views["side"].get("projection", [[0, 0, -1]])[0][2] > 0))
         for key, var in self.factors.items():
             var.set(data.get("proportions", {}).get(key, 1))
+        self._invalidate_comparison()
         self._change_view()
 
     def _fit(self):
@@ -537,15 +749,37 @@ class AnatomyDialog(tk.Toplevel):
         def solve():
             report = {}
             mesh, patches, errors = reconstruct_data(data, deformation_report=report)
-            return mesh, patches, report, errors
+            comparisons = {}
+            for name, view in data["views"].items():
+                mask = None
+                if view.get("mask"):
+                    with Image.open(view["mask"]) as source:
+                        mask = source.convert("RGB")
+                comparisons[name], iou = compare_silhouette(
+                    mesh, self.images[name], view["projection"], mask,
+                )
+                report.setdefault("silhouette_iou", {})[name] = iou
+            return mesh, patches, report, errors, comparisons
         self._work("Ajustando y validando la geometría en CPU…", solve, lambda result: self._review(data, result))
 
     def _review(self, data, result):
-        mesh, patches, report, errors = result
+        mesh, patches, report, errors, comparisons = result
+        self.comparisons = comparisons
+        self.comparison_mode.set(True)
+        self._redraw()
+        issues = blocking_geometry_issues(report)
+        if issues:
+            self.status.set("Exportación bloqueada. Revisa la silueta o corrige el ajuste.")
+            messagebox.showerror("Geometría rechazada", "\n".join(issues), parent=self)
+            return
         summary = "\n".join(f"{VIEW_LABELS[name]} {error:.2f} px" for name, error in errors.items())
         closed = "sí" if report["watertight"] else "no"
         winding = "sí" if report["winding_consistent"] else "no"
         self.status.set("Validación terminada. Puedes guardar o corregir el ajuste.")
+        silhouette = ", ".join(
+            f"{VIEW_LABELS[name]} {value:.0%}" for name, value in report["silhouette_iou"].items()
+            if value is not None
+        ) or "sin primer plano fiable"
         if not messagebox.askyesno("Validación del cuerpo", (
             f'{report["vertices"]:,} vértices / {report["faces"]:,} caras · Cerrado {closed}\n'
             f"Orientación consistente {winding}\n"
@@ -553,13 +787,15 @@ class AnatomyDialog(tk.Toplevel):
             f'Caras con área extrema {report["extreme_area_faces"]}\n'
             f'Normales con giro mayor de 90° {report["reflected_normal_faces"]}\n'
             f'Simetría X, percentil 95 {report["symmetry_p95_height"]:.2%} de la altura\n\n'
-            f"Reproyección antes de estilizar\n{summary}\n\n¿Guardar el cuerpo completo?"
+            f"Reproyección antes de estilizar\n{summary}\n"
+            f"IoU de siluetas · {silhouette}\n"
+            "Verde coincide · rosa solo referencia · celeste solo modelo.\n\n¿Guardar el cuerpo completo?"
         ), parent=self):
             return
         folder = filedialog.askdirectory(parent=self, title="Carpeta de salida Genesis")
         if folder:
             self._work("Guardando GLB y validación…",
-                       lambda: export_studio_reconstruction(folder, data, mesh, patches, report, errors),
+                       lambda: export_studio_reconstruction(folder, data, mesh, patches, report, errors, comparisons),
                        self._finish)
 
     def _finish(self, outputs):
@@ -568,6 +804,7 @@ class AnatomyDialog(tk.Toplevel):
 
     def _work(self, status, operation, done):
         self.busy = True
+        self.profile_combo.state(["disabled"])
         self.status.set(status)
         queue = Queue()
         def run():
@@ -582,6 +819,7 @@ class AnatomyDialog(tk.Toplevel):
                 self.after(60, check)
                 return
             self.busy = False
+            self.profile_combo.state(["!disabled"])
             if ok:
                 done(result)
             else:

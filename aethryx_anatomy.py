@@ -13,6 +13,12 @@ from scipy.spatial import cKDTree
 import trimesh
 
 VIEWS = ("front", "side", "back")
+PROPORTIONS = {
+    "height": "Altura", "torso": "Largo de torso", "waist": "Ancho de cintura",
+    "hips": "Ancho de caderas", "shoulders": "Ancho de hombros", "arms": "Largo de brazos",
+    "legs": "Largo de piernas", "neck": "Ancho de cuello", "head": "Tamaño de cabeza",
+    "hands": "Tamaño de manos", "feet": "Tamaño de pies",
+}
 
 
 def orthographic_projection(view, center, ground, crown, bounds, side=1):
@@ -45,7 +51,12 @@ def load_body_template(path):
 
 
 def reconstruct_data(data, root=Path("."), *, deformation_report=None):
-    mesh = load_body_template(root / data["template"])
+    if data.get("bundled_template"):
+        from aethryx_profiles import BUNDLED_BODY
+        template = BUNDLED_BODY
+    else:
+        template = root / data["template"]
+    mesh = load_body_template(template)
     original = mesh.copy() if deformation_report is not None else None
     ids = np.asarray(data["vertex_indices"])
     if (ids.ndim != 1 or ids.dtype.kind not in "iu" or len(ids) < 4
@@ -98,7 +109,11 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
         if rank != 3:
             raise ValueError(f"Las observaciones no resuelven la profundidad del vértice {ids[index]}.")
         targets.append(target)
-    deform = RBFInterpolator(anchors, targets - anchors, kernel="linear", degree=0)
+    smoothing = float(data.get("smoothing", 0))
+    if not 0 <= smoothing <= .1:
+        raise ValueError("El suavizado del ajuste debe estar entre 0 y 0,1.")
+    deform = RBFInterpolator(anchors, targets - anchors, kernel="linear", degree=0,
+                             smoothing=smoothing * mesh.extents[1])
     mesh.vertices = mesh.vertices + deform(mesh.vertices)
     if not np.isfinite(mesh.vertices).all() or np.any(mesh.area_faces <= 0):
         raise ValueError("El ajuste produjo geometría inválida o caras colapsadas.")
@@ -125,24 +140,51 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
 
 
 def anime_proportions(vertices, bounds, factors):
-    head, shoulders, legs = (float(factors.get(key, 1)) for key in ("head", "shoulders", "legs"))
-    if not all(0.75 <= factor <= 1.35 for factor in (head, shoulders, legs)):
+    values = {key: float(factors.get(key, 1)) - 1 for key in PROPORTIONS}
+    if not all(0.75 <= factor + 1 <= 1.35 for factor in values.values()):
         raise ValueError("Las proporciones deben estar entre 0,75 y 1,35.")
     lower, upper = bounds
     if upper[1] <= lower[1]:
         raise ValueError("El cuerpo ajustado perdió su altura.")
     center = (lower + upper) / 2
-    y = (vertices[:, 1] - lower[1]) / (upper[1] - lower[1])
+    height = upper[1] - lower[1]
+    y = (vertices[:, 1] - lower[1]) / height
     result = vertices.copy()
-    head_weight = np.clip((y - 0.82) / 0.12, 0, 1)
-    head_weight = head_weight**2 * (3 - 2 * head_weight)
-    shoulder_weight = np.maximum(0, 1 - np.abs(y - 0.73) / 0.13)**2
-    result[:, 0] += (vertices[:, 0] - center[0]) * (
-        (head - 1) * head_weight + (shoulders - 1) * shoulder_weight
+    x = vertices[:, 0] - center[0]
+    z = vertices[:, 2] - center[2]
+    reach = np.abs(x) / max((upper[0] - lower[0]) / 2, 1e-9)
+
+    def smooth(value):
+        clipped = np.clip(value, 0, 1)
+        return clipped**2 * (3 - 2 * clipped)
+
+    def band(mid, radius):
+        return smooth(1 - np.abs(y - mid) / radius)
+
+    head = smooth((y - 0.86) / 0.10) * values["head"]
+    torso_width = (band(.55, .10) * values["waist"] + band(.48, .12) * values["hips"]) * (
+        1 - smooth((reach - .38) / .23)
     )
-    result[:, 2] += (vertices[:, 2] - center[2]) * (head - 1) * head_weight
-    waist = lower[1] + 0.48 * (upper[1] - lower[1])
-    result[:, 1] += np.minimum(vertices[:, 1] - waist, 0) * (legs - 1)
+    neck = band(.855, .055) * values["neck"]
+    shoulder = band(.76, .17) * values["shoulders"]
+    result[:, 0] += x * (head + torso_width + neck + shoulder)
+    result[:, 2] += z * (head + torso_width * .5 + neck)
+    arm_weight = smooth((reach - .39) / .24) * smooth((y - .4) / .17) * values["arms"]
+    result[:, 0] += (x - np.sign(x) * (upper[0] - lower[0]) * .19) * arm_weight
+    result[:, 1] += (y - .78) * height * arm_weight
+    hand = smooth((reach - .79) / .16) * smooth((y - .36) / .2) * values["hands"]
+    result[:, 0] += (x - np.sign(x) * (upper[0] - lower[0]) * .39) * hand
+    result[:, 1] += (y - .62) * height * hand
+    result[:, 2] += (z - (upper[2] - lower[2]) * .2) * hand
+    foot = (1 - smooth(y / .12)) * values["feet"]
+    result[:, 2] += z * foot
+    result[:, 0] += (x - np.sign(x) * (upper[0] - lower[0]) * .22) * foot * .5
+    result[:, 1] += height * (
+        np.minimum(y - .48, 0) * values["legs"] + np.clip(y - .48, 0, .32) * values["torso"]
+        + (y - .86) * head
+    )
+    ground = lower[1] - .48 * height * values["legs"]
+    result[:, 1] += (result[:, 1] - ground) * values["height"]
     return result
 
 
@@ -163,14 +205,12 @@ def _triangle_intersections(mesh, limit=100):
     for index, box in enumerate(bounds):
         candidates.Reset()
         locator.FindCellsWithinBounds(box, candidates)
-        a, b, c = faces[index]
-        for offset in range(candidates.GetNumberOfIds()):
-            other = candidates.GetId(offset)
-            if other <= index or np.any(maxs[index] < mins[other]) or np.any(maxs[other] < mins[index]):
-                continue
-            x, y, z = faces[other]
-            if a in (x, y, z) or b in (x, y, z) or c in (x, y, z):
-                continue
+        count = candidates.GetNumberOfIds()
+        others = np.fromiter((candidates.GetId(i) for i in range(count)), dtype=np.intp, count=count)
+        others = others[(others > index) & (maxs[index] >= mins[others]).all(axis=1)
+                        & (maxs[others] >= mins[index]).all(axis=1)]
+        adjacent = (faces[others, :, None] == faces[index]).any(axis=(1, 2))
+        for other in others[~adjacent]:
             if vtkTriangle.TrianglesIntersect(*triangles[index], *triangles[other]):
                 found += 1
                 if found == limit:
@@ -195,6 +235,7 @@ def validate_deformation(original, mesh):
         "vertices": len(mesh.vertices), "faces": len(mesh.faces),
         "watertight": bool(mesh.is_watertight),
         "winding_consistent": bool(mesh.is_winding_consistent),
+        "positive_volume": bool(mesh.volume > 0),
         "extreme_area_faces": int(np.count_nonzero((ratios < 0.2) | (ratios > 5))),
         "reflected_normal_faces": int(np.count_nonzero(
             np.einsum("ij,ij->i", original.face_normals, mesh.face_normals) < 0,
@@ -205,16 +246,48 @@ def validate_deformation(original, mesh):
     }
 
 
-def export_studio_reconstruction(folder, data, mesh, patches, report, errors):
+def blocking_geometry_issues(report):
+    issues = []
+    if not report["watertight"]:
+        issues.append("El cuerpo tiene bordes abiertos o no manifold.")
+    if not report["winding_consistent"]:
+        issues.append("La orientación de las caras es incoherente.")
+    elif report["watertight"] and not report["positive_volume"]:
+        issues.append("El volumen orientado del cuerpo no es positivo.")
+    if report["intersection_pairs_up_to_100"]:
+        issues.append("Se detectaron autointersecciones.")
+    if report["extreme_area_faces"] > .01 * report["faces"]:
+        issues.append("Más del 1 % de las caras tiene un cambio de área extremo.")
+    if report["reflected_normal_faces"] > .01 * report["faces"]:
+        issues.append("Más del 1 % de las normales giró más de 90°.")
+    return issues
+
+
+def export_studio_reconstruction(folder, data, mesh, patches, report, errors, comparisons=None):
     """Keep the complete body and optional reference patches in separate files."""
-    output = Path(mkdtemp(prefix="genesis6-", dir=folder))
+    issues = blocking_geometry_issues(report)
+    if issues:
+        raise ValueError("\n".join(issues))
+    output = Path(mkdtemp(prefix="genesis7-", dir=folder))
     try:
         body = output / "cuerpo-base.glb"
         trimesh.Scene({"cuerpo-base": mesh}).export(body, file_type="glb")
         modular = None
+        components = [{"name": "cuerpo-base", "role": "body", "file": body.name}]
         if set(patches.geometry) - {"sin-asignar"}:
             modular = output / "parches.glb"
             patches.export(modular, file_type="glb")
+            for name, piece in patches.geometry.items():
+                if name == "sin-asignar":
+                    continue
+                path = output / f"componente-{len(components):02d}.glb"
+                trimesh.Scene({name: piece}).export(path, file_type="glb")
+                components.append({"name": name, "role": "surface-patch", "file": path.name})
+        (output / "componentes.json").write_text(
+            json.dumps(components, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+        for name, comparison in (comparisons or {}).items():
+            comparison.save(output / f"silueta-{name}.png")
         (output / "referencias.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         (output / "validacion.json").write_text(json.dumps({
             **report, "landmark_rmse_px_before_proportions": errors,
