@@ -1150,6 +1150,8 @@ class AethryxStudio(tk.Tk):
         )
 
     def export_disconnected_components(self):
+        if not self._workspace_available():
+            return
         if not self.current_model_path or not os.path.isfile(self.current_model_path):
             messagebox.showinfo(
                 "Componentes geométricos",
@@ -1163,19 +1165,13 @@ class AethryxStudio(tk.Tk):
         if result["status"] != "available":
             messagebox.showerror("Componentes geométricos", result["reason"])
             return
-        if self.loaded_scene is None:
-            self.loaded_scene = trimesh.Scene()
-        for index, component in enumerate(result["components"], start=1):
-            try:
-                piece = trimesh.load(component["path"], force="mesh", process=False)
-                self.loaded_scene.geometry[f"component-{index}"] = piece
-            except Exception as exc:
-                self.append_log(f"No se pudo importar el componente: {exc}")
         messagebox.showinfo(
             "Componentes geométricos",
             f"Se exportaron {len(result['components'])} componente(s) desconectado(s).\n"
+            f"Escena editable: {result['scene_path']}\n"
             "La asignación anatómica permanece pendiente.",
         )
+        self.load_model(result["scene_path"])
 
     def show_avatar_scene_graph(self):
         nodes = build_avatar_scene_graph(self.reference_regions, self.model_stats)

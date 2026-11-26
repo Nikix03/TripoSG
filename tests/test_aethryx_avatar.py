@@ -9,6 +9,7 @@ import trimesh
 from aethryx_avatar import (
     analyze_mesh_symmetry,
     build_avatar_scene_graph,
+    export_disconnected_components,
     repair_mesh_copy,
     retopologize_mesh_copy,
     split_disconnected_components,
@@ -17,6 +18,47 @@ from studio_project import save_project, load_project
 
 
 class AvatarSceneGraphTests(unittest.TestCase):
+    def test_component_exports_keep_instances_and_open_faces(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "source.glb"
+            triangle = trimesh.Trimesh(
+                vertices=[[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+                faces=[[0, 1, 2]],
+                process=False,
+            )
+            pair = trimesh.util.concatenate([
+                triangle, triangle.copy().apply_translation([2, 0, 0]),
+            ])
+            source = trimesh.Scene()
+            source.add_geometry(pair, geom_name="pair", node_name="first")
+            source.graph.update(
+                frame_to="second", geometry="pair",
+                matrix=trimesh.transformations.translation_matrix([0, 5, 1]),
+            )
+            source.export(str(path), file_type="glb")
+            original = path.read_bytes()
+            analysis = split_disconnected_components(path)
+            self.assertEqual(analysis["status"], "available", analysis)
+            components = analysis["components"]
+            self.assertEqual(len(components), 4)
+            self.assertEqual(len({component["id"] for component in components}), 4)
+            self.assertEqual(sorted(tuple(c["bounds"][0]) for c in components), [
+                (0, 0, 0), (0, 5, 1), (2, 0, 0), (2, 5, 1),
+            ])
+
+            result = export_disconnected_components(path, folder)
+            self.assertEqual(result["status"], "available", result)
+            scene = trimesh.load(result["scene_path"], force="scene", process=False)
+            self.assertEqual(len(scene.graph.nodes_geometry), 4)
+            for report, exported in zip(components, result["components"]):
+                piece = trimesh.load(exported["path"], force="mesh", process=False)
+                self.assertEqual(len(piece.faces), 1)
+                np.testing.assert_allclose(piece.bounds, report["bounds"])
+            repeat = export_disconnected_components(path, folder)
+            self.assertEqual(repeat["status"], "available", repeat)
+            self.assertNotEqual(repeat["scene_path"], result["scene_path"])
+            self.assertEqual(path.read_bytes(), original)
+
     def test_scene_graph_has_humanoid_required_nodes(self):
         nodes = build_avatar_scene_graph()
         ids = {node["id"] for node in nodes}

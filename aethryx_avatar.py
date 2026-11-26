@@ -76,38 +76,50 @@ def build_avatar_scene_graph(references=None, mesh_stats=None):
     return [asdict(node) for node in updated]
 
 
-def split_disconnected_components(model_path):
+def _mesh_components(model_path):
     from pathlib import Path
     import trimesh
 
     path = Path(model_path)
     if not path.is_file():
-        return {"status": "unavailable", "reason": "Malla no encontrada"}
-    try:
-        scene = trimesh.load(str(path), force="scene", process=False)
-    except Exception as exc:
-        return {"status": "unavailable", "reason": f"No se pudo cargar la malla: {exc}"}
+        raise FileNotFoundError("Malla no encontrada")
+    scene = trimesh.load(str(path), force="scene", process=False)
+
+    pieces_by_geometry = {}
+    for node in scene.graph.nodes_geometry:
+        transform, geometry_name = scene.graph[node]
+        geometry = scene.geometry[geometry_name]
+        if not isinstance(geometry, trimesh.Trimesh) or not len(geometry.faces):
+            continue
+        if geometry_name not in pieces_by_geometry:
+            pieces = geometry.split(only_watertight=False, repair=False)
+            if sum(len(piece.faces) for piece in pieces) != len(geometry.faces):
+                raise ValueError(f"La separación de {geometry_name} no conservó todas las caras")
+            pieces_by_geometry[geometry_name] = pieces
+        for index, piece in enumerate(pieces_by_geometry[geometry_name]):
+            yield node, index, piece, transform
+
+
+def split_disconnected_components(model_path):
+    import trimesh
 
     components = []
-    for geometry_name, geometry in scene.geometry.items():
-        try:
-            pieces = geometry.split(only_watertight=False)
-        except Exception:
-            pieces = [geometry]
-        for index, piece in enumerate(pieces):
-            bounds = piece.bounds
+    try:
+        for node, index, piece, transform in _mesh_components(model_path):
+            vertices = trimesh.transform_points(piece.vertices, transform)
             components.append({
-                "id": f"{geometry_name}-component-{index}",
-                "name": f"Componente geométrico {index + 1}",
+                "id": f"{node}-component-{index}",
+                "name": f"Componente geométrico {len(components) + 1}",
                 "vertices": int(len(piece.vertices)),
                 "faces": int(len(piece.faces)),
-                "bounds": [
-                    [float(value) for value in bounds[0]],
-                    [float(value) for value in bounds[1]],
-                ],
+                "bounds": [vertices.min(axis=0).tolist(), vertices.max(axis=0).tolist()],
                 "classification": "unassigned",
                 "editable": True,
             })
+    except Exception as exc:
+        return {"status": "unavailable", "reason": f"No se pudo separar la malla: {exc}"}
+    if not components:
+        return {"status": "unavailable", "reason": "La escena no contiene mallas triangulares"}
     return {
         "status": "available",
         "components": components,
@@ -117,37 +129,42 @@ def split_disconnected_components(model_path):
 
 def export_disconnected_components(model_path, output_dir):
     from pathlib import Path
+    import shutil
+    import tempfile
     import trimesh
 
-    path = Path(model_path)
-    output_dir = Path(output_dir)
-    if not path.is_file():
-        return {"status": "unavailable", "reason": "Malla no encontrada"}
-    output_dir.mkdir(parents=True, exist_ok=True)
+    destination = None
     try:
-        scene = trimesh.load(str(path), force="scene", process=False)
-    except Exception as exc:
-        return {"status": "unavailable", "reason": f"No se pudo cargar la malla: {exc}"}
-
-    exported = []
-    component_index = 0
-    for geometry in scene.geometry.values():
-        try:
-            pieces = geometry.split(only_watertight=False)
-        except Exception:
-            pieces = [geometry]
-        for piece in pieces:
-            component_index += 1
-            output_path = output_dir / f"component-{component_index}.glb"
-            trimesh.Scene([piece]).export(str(output_path), file_type="glb")
+        components = list(_mesh_components(model_path))
+        if not components:
+            return {"status": "unavailable", "reason": "La escena no contiene mallas triangulares"}
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        destination = Path(tempfile.mkdtemp(prefix="componentes-", dir=output_dir))
+        scene = trimesh.Scene()
+        exported = []
+        for index, (_, _, piece, transform) in enumerate(components, start=1):
+            name = f"component-{index}"
+            output_path = destination / f"{name}.glb"
+            single = trimesh.Scene()
+            for target in (scene, single):
+                target.add_geometry(piece, node_name=name, geom_name=name, transform=transform)
+            single.export(str(output_path), file_type="glb")
             exported.append({
                 "path": str(output_path),
                 "vertices": int(len(piece.vertices)),
                 "faces": int(len(piece.faces)),
             })
+        scene_path = destination / "scene.glb"
+        scene.export(str(scene_path), file_type="glb")
+    except Exception as exc:
+        if destination is not None:
+            shutil.rmtree(destination, ignore_errors=True)
+        return {"status": "unavailable", "reason": f"No se pudo exportar la separación: {exc}"}
     return {
         "status": "available",
         "components": exported,
+        "scene_path": str(scene_path),
         "classification": "unassigned",
     }
 
