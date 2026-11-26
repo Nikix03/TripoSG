@@ -85,7 +85,7 @@ def demo_rotations():
     return {"LeftUpperArm": (0, 0, 24), "LeftLowerArm": (0, 22, 20),
             "RightUpperArm": (0, 0, -22), "RightLowerArm": (0, -18, -16),
             "LeftUpperLeg": (-12, 0, 0), "LeftLowerLeg": (16, 0, 0), "Head": (0, 12, 0),
-            "LeftHand": (-8, 10, 0)}
+            "LeftHand": (-8, 10, 0), "LeftEye": (-4, 9, 0), "RightEye": (-4, 9, 0)}
 
 
 def pose_matrices(skeleton, rotations):
@@ -153,6 +153,21 @@ def facial_morphs(mesh):
             offsets[int(np.argmax(mouth)), 2] = depth * 1e-5
         result[f"vrc.v_{name}"] = offsets.astype(np.float32)
     return result
+
+
+def _eyelid_morphs(name, parts):
+    for eye, side in zip(EYES, ("Left", "Right")):
+        if not name.startswith(f"{eye}-parpado-") or eye not in parts:
+            continue
+        eyelid, globe = parts[name], parts[eye]
+        upper = name.endswith("-superior")
+        displacement = np.zeros((len(eyelid.vertices), 3), dtype=np.float32)
+        lid_center = eyelid.bounds[:, 1].mean()
+        globe_center = globe.bounds[:, 1].mean()
+        displacement[:, 1] = (globe_center - lid_center) * (.83 if upper else .72)
+        displacement[:, 2] = globe.extents[2] * .055
+        return {f"Blink{side}": displacement, "Blink": displacement.copy()}
+    return {}
 
 
 class _GlbBuffers:
@@ -254,13 +269,15 @@ def export_rigged_avatar(scene, path, influences=4):
                 joints, weights = body_joints[nearest], body_weights[nearest]
             attributes["JOINTS_0"] = glb.accessor(joints, "VEC4", 5123)
             attributes["WEIGHTS_0"] = glb.accessor(weights, "VEC4")
-            if name == BODY:
+            shapes = facial if name == BODY else _eyelid_morphs(name, parts)
+            if shapes:
+                mapping = nearest if name == BODY else cKDTree(parts[name].vertices).query(vertices)[1]
                 primitive["targets"] = [
-                    {"POSITION": glb.accessor(deltas[nearest], "VEC3", bounds=True)}
-                    for deltas in facial.values()
+                    {"POSITION": glb.accessor(deltas[mapping], "VEC3", bounds=True)}
+                    for deltas in shapes.values()
                 ]
-                mesh_data["weights"] = [0.] * len(facial)
-                mesh_data.setdefault("extras", {})["targetNames"] = list(facial)
+                mesh_data["weights"] = [0.] * len(shapes)
+                mesh_data.setdefault("extras", {})["targetNames"] = list(shapes)
     rest = glb.accessor(np.array([0., .75, 1.5]), "SCALAR", bounds=True)
     channels, samplers = [], []
     for joint, angle in demo_rotations().items():
@@ -276,24 +293,74 @@ def export_rigged_avatar(scene, path, influences=4):
     return {"joints": len(names), "morphs": list(facial), "skinned_nodes": sum("skin" in n for n in nodes)}
 
 
+class PosePreview:
+    def __init__(self, scene, influences=4, *, simplify=False):
+        avatar = ModularAvatar(scene)
+        if BODY not in avatar.nodes:
+            raise ValueError("Crea primero el cuerpo base.")
+        originals = {node: avatar.get(node, world=True) for node in avatar.nodes}
+        body = originals[BODY]
+        self.skeleton = humanoid_skeleton(body, originals)
+        joints, weights = skin_weights(np.asarray(body.vertices), self.skeleton, influences)
+        tree = cKDTree(np.asarray(body.vertices).copy())
+        names = self.skeleton[0]
+        self.parts, self.binding = {}, {}
+        for name, mesh in originals.items():
+            if simplify and len(mesh.faces) > 4000:
+                try:
+                    reduced = mesh.simplify_quadric_decimation(face_count=4000)
+                    reduced.visual.material = getattr(mesh.visual, "material", None)
+                    mesh = reduced
+                except (ValueError, ImportError, RuntimeError, TypeError, AttributeError):
+                    pass
+            self.parts[name] = mesh
+            if name in EYES:
+                self.binding[name] = names.index("LeftEye" if name == EYES[0] else "RightEye")
+            elif name.startswith(("cabello", "boca-", "dientes-", "lengua", *EYES)):
+                self.binding[name] = names.index("Head")
+            else:
+                nearest = tree.query(mesh.vertices)[1]
+                self.binding[name] = (joints[nearest], weights[nearest])
+        self.morphs = facial_morphs(self.parts[BODY])
+        self.eyelid_morphs = {name: shapes for name in self.parts
+                             if (shapes := _eyelid_morphs(name, self.parts))}
+
+    def t_pose(self):
+        names, _, bind = self.skeleton
+        rotations = {}
+        for side, sign in (("Left", 1), ("Right", -1)):
+            delta = bind[names.index(side + "Hand")] - bind[names.index(side + "UpperArm")]
+            rotations[side + "UpperArm"] = (0, 0, sign * float(np.degrees(np.arctan2(-delta[1], abs(delta[0])))))
+        return rotations
+
+    def evaluate(self, rotations, expression=None, strength=0):
+        if not 0 <= strength <= 1:
+            raise ValueError("La intensidad de expresión requiere un valor de 0 a 1.")
+        matrices = pose_matrices(self.skeleton, rotations)
+        transformed = {}
+        for name, mesh in self.parts.items():
+            vertices = np.asarray(mesh.vertices)
+            if name == BODY and expression:
+                vertices = vertices + self.morphs[expression] * strength
+            elif name in self.eyelid_morphs and expression in self.eyelid_morphs[name]:
+                vertices = vertices + self.eyelid_morphs[name][expression] * strength
+            binding = self.binding[name]
+            if isinstance(binding, tuple):
+                transformed[name] = deform_pose(vertices, *binding, matrices)
+            else:
+                matrix = matrices[binding]
+                transformed[name] = vertices @ matrix[:3, :3].T + matrix[:3, 3]
+        bind = self.skeleton[2]
+        points = np.einsum("nij,nj->ni", matrices[:, :3, :3], bind) + matrices[:, :3, 3]
+        return transformed, points
+
+
 def preview_pose(scene, influences=4):
-    avatar = ModularAvatar(scene)
-    if BODY not in avatar.nodes:
-        raise ValueError("Crea primero el cuerpo base.")
-    parts = {node: avatar.get(node, world=True) for node in avatar.nodes}
-    body = parts[BODY]
-    skeleton = humanoid_skeleton(body, parts)
-    joints, weights = skin_weights(np.asarray(body.vertices), skeleton, influences)
-    matrices = pose_matrices(skeleton, demo_rotations())
-    tree = cKDTree(np.asarray(body.vertices).copy())
-    for name, mesh in parts.items():
-        if name in EYES or name.startswith(("cabello", "boca-", "dientes-", "lengua", *EYES)):
-            head = skeleton[0].index("Head")
-            mesh.apply_transform(matrices[head])
-            continue
-        nearest = tree.query(mesh.vertices)[1]
-        mesh.vertices = deform_pose(mesh.vertices, joints[nearest], weights[nearest], matrices)
-    return trimesh.Scene(parts)
+    preview = PosePreview(scene, influences)
+    parts, _ = preview.evaluate(demo_rotations())
+    for name, vertices in parts.items():
+        preview.parts[name].vertices = vertices
+    return trimesh.Scene(preview.parts)
 
 
 def preview_expression(scene, name, strength=1.0):
@@ -308,4 +375,11 @@ def preview_expression(scene, name, strength=1.0):
         raise ValueError("Expresión desconocida. Disponibles: " + ", ".join(shapes))
     body.vertices += shapes[name] * strength
     avatar.replace(BODY, body)
+    parts = {node: avatar.get(node, world=True) for node in avatar.nodes if node.startswith(EYES)}
+    for node, mesh in parts.items():
+        changes = _eyelid_morphs(node, parts)
+        if name in changes:
+            mesh.vertices += changes[name] * strength
+            mesh.apply_transform(np.linalg.inv(avatar.scene.graph[node][0]))
+            avatar.replace(node, mesh)
     return avatar.scene

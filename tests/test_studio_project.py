@@ -1,12 +1,30 @@
 import json
+import os
 from pathlib import Path
 import struct
 import tempfile
 import unittest
 from PIL import Image
-from studio_project import save_project, load_project, validate_settings, validate_glb
+from studio_project import save_project, load_project, validate_settings, validate_glb, newer_recovery, recovery_path
 
 class ProjectTests(unittest.TestCase):
+    def test_recovery_sidecar_never_overwrites_main_project_and_ignores_older_copy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "main.aeth"
+            fields = {"image": "", "model": None, "output": "", "steps": 60, "faces": -1,
+                      "seed": 42, "guidance": 7}
+            save_project(path, **fields)
+            original = path.read_bytes()
+            recovery = recovery_path(path)
+            save_project(recovery, **{**fields, "steps": 61})
+            os.utime(recovery, ns=(path.stat().st_mtime_ns + 100_000_000,) * 2)
+            self.assertEqual(newer_recovery(path), recovery)
+            self.assertEqual(load_project(recovery)["settings"]["steps"], 61)
+            self.assertEqual(path.read_bytes(), original)
+            stamp = recovery.stat().st_mtime_ns + 100_000_000
+            os.utime(path, ns=(stamp,) * 2)
+            self.assertIsNone(newer_recovery(path))
+
     def test_modular_project_reopens_references_masks_controls_and_visibility(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

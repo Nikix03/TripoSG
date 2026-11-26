@@ -15,6 +15,13 @@ CHANNELS = {
 RESOLUTIONS = (512, 1024, 2048, 4096)
 
 
+def color_gradient(top, bottom, resolution=512):
+    first = np.asarray(Image.new("RGB", (1, 1), top))[0, 0]
+    last = np.asarray(Image.new("RGB", (1, 1), bottom))[0, 0]
+    blend = np.linspace(1, 0, resolution)[:, None, None]
+    return Image.fromarray(np.repeat(np.rint(blend * first + (1 - blend) * last), 4, axis=1).astype(np.uint8))
+
+
 def update_pbr_maps(mesh, layers, resolution=1024, alpha_mode="OPAQUE", cutoff=.5):
     """Replace supplied channels while preserving unrelated channels and mesh UVs."""
     if resolution not in RESOLUTIONS or alpha_mode not in ("OPAQUE", "MASK", "BLEND") or not 0 <= cutoff <= 1:

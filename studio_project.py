@@ -57,6 +57,24 @@ def _relative(value, parent):
     except ValueError:  # Windows volumes differ
         return str(path)
 
+
+def recovery_path(project):
+    path = Path(project).resolve()
+    if path.suffix.lower() != ".aeth" or path.stem.endswith(".recovery"):
+        raise ValueError("Selecciona un proyecto principal .aeth para crear una recuperación.")
+    return path.with_name(f"{path.stem}.recovery.aeth")
+
+
+def newer_recovery(project):
+    try:
+        snapshot = recovery_path(project)
+        if snapshot.is_file() and snapshot.stat().st_mtime_ns > Path(project).stat().st_mtime_ns:
+            return snapshot
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def _modular_data(hidden, anatomy, parent, *, saving):
     if (not isinstance(hidden, (list, tuple)) or any(not isinstance(name, str) or not name for name in hidden)
             or len(set(hidden)) != len(hidden)):

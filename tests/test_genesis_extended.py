@@ -10,12 +10,14 @@ from trimesh.visual.texture import TextureVisuals
 
 from aethryx_materials import pbr_map_images, transform_uv, update_pbr_maps, uv_quality
 from aethryx_bridge import inspect_avatar_glb
+from kiria_dialog import apply_scene_plan, plan_scene_command
 from aethryx_modular import (
     BODY, EYES, ModularAvatar, anime_body, avatar_eye, fit_garment, fitted_eyelids,
-    mouth_components, regional_hair,
+    mouth_components, regional_hair, visible_body_faces,
 )
 from aethryx_rig import (
-    _GlbBuffers, deform_pose, export_rigged_avatar, facial_morphs, humanoid_skeleton, pose_matrices, skin_weights,
+    _GlbBuffers, PosePreview, deform_pose, export_rigged_avatar, facial_morphs,
+    humanoid_skeleton, pose_matrices, skin_weights,
 )
 from studio_project import validate_glb
 
@@ -99,6 +101,40 @@ class GenesisExtendedTests(unittest.TestCase):
         feet = body.vertices[:, 1] < .10
         self.assertLess(np.max(np.linalg.norm((moved - rest)[feet], axis=1)), .001)
 
+    def test_pose_t_moves_arms_and_an_eye_rotates_independently(self):
+        source = self.body
+        scene = trimesh.Scene({
+            BODY: source, EYES[0]: avatar_eye(source, True, "#3366cc"),
+            EYES[1]: avatar_eye(source, False, "#aa4499"),
+        })
+        left_lid, right_lid = (f"{eye}-parpado-superior" for eye in EYES)
+        for eye, name in zip(EYES, (left_lid, right_lid)):
+            scene.add_geometry(fitted_eyelids(scene.geometry[eye])["superior"], node_name=name, geom_name=name)
+        preview = PosePreview(scene)
+        rest, bind = preview.evaluate({})
+        changed, t_points = preview.evaluate(preview.t_pose())
+        left_shoulder = preview.skeleton[0].index("LeftUpperArm")
+        left_hand = preview.skeleton[0].index("LeftHand")
+        self.assertLess(abs(t_points[left_shoulder, 1] - t_points[left_hand, 1]), 1e-6)
+        self.assertGreater(abs(bind[left_shoulder, 1] - bind[left_hand, 1]), .10)
+        self.assertGreater(np.max(abs(changed[BODY] - rest[BODY])), .06)
+        eye, _ = preview.evaluate({"LeftEye": (0, 23, 0)})
+        self.assertGreater(np.max(abs(eye[EYES[0]] - rest[EYES[0]])), .001)
+        np.testing.assert_allclose(eye[EYES[1]], rest[EYES[1]], atol=1e-10)
+        blinking, _ = preview.evaluate({}, "BlinkLeft", 1)
+        self.assertGreater(np.max(abs(blinking[left_lid] - rest[left_lid])), .001)
+        np.testing.assert_allclose(blinking[right_lid], rest[right_lid], atol=1e-10)
+
+    def test_preview_hides_regions_without_removing_body_faces(self):
+        body = self.body.copy()
+        body.metadata["aethryx_hidden_body_bands"] = ["torso"]
+        visible = visible_body_faces(body)
+        self.assertGreater(visible.sum(), 0)
+        self.assertLess(visible.sum(), len(body.faces))
+        np.testing.assert_array_equal(body.faces, self.body.faces)
+        body.metadata["aethryx_hidden_body_bands"].clear()
+        self.assertTrue(visible_body_faces(body).all())
+
     def test_glb_contains_bind_weights_animation_and_local_morph_deltas(self):
         body = self.body
         shapes = facial_morphs(body)
@@ -114,7 +150,7 @@ class GenesisExtendedTests(unittest.TestCase):
             glb = _GlbBuffers(path.read_bytes())
             doc = validate_glb(path)
             self.assertEqual(len(doc["skins"][0]["joints"]), 53)
-            self.assertEqual(len(doc["animations"][0]["channels"]), 8)
+            self.assertEqual(len(doc["animations"][0]["channels"]), 10)
             node = next(node for node in doc["nodes"] if node["name"] == BODY)
             mesh = doc["meshes"][node["mesh"]]
             primitive = mesh["primitives"][0]
@@ -127,7 +163,22 @@ class GenesisExtendedTests(unittest.TestCase):
             report = inspect_avatar_glb(path)
             self.assertTrue(report["valid_native_glb"])
             self.assertEqual(report["visemes"], 15)
+            self.assertGreater(report["sample_body_displacement"], .05)
             glb.binary[view["byteOffset"]:view["byteOffset"] + 16] = b"\0" * 16
             corrupt = Path(tmp) / "bad.glb"
             corrupt.write_bytes(glb.encode())
             self.assertFalse(inspect_avatar_glb(corrupt)["valid_native_glb"])
+
+    def test_kiria_previews_allowlisted_changes_without_modifying_input_scene(self):
+        original = trimesh.Scene({BODY: self.body})
+        show = plan_scene_command("mostrar", [BODY], {BODY})
+        self.assertEqual(apply_scene_plan(show, original, [BODY]).hidden, set())
+        apply_color = plan_scene_command("color_base", [BODY], {BODY}, "#44aaff")
+        revised = apply_scene_plan(apply_color, original, ())
+        material = revised.get(BODY).visual.material
+        self.assertEqual(material.baseColorFactor[:3].tolist(), [68, 170, 255])
+        self.assertNotEqual(original.geometry[BODY].visual.material.baseColorFactor[:3].tolist(), [68, 170, 255])
+        with self.assertRaises(ValueError):
+            plan_scene_command("python", [BODY], {BODY}, "")
+        with self.assertRaises(ValueError):
+            plan_scene_command("ocultar", ["missing"], {BODY})

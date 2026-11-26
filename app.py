@@ -26,8 +26,10 @@ from character_sheet import (
 )
 from character_sheet_dialog import CharacterSheetDialog
 from anatomy_dialog import AnatomyDialog
+from aethryx_modular import BODY, visible_body_faces
 from modular_dialog import ComponentDialog
-from studio_project import validate_settings, validate_glb, save_project, load_project
+from kiria_dialog import KiriaDialog
+from studio_project import validate_settings, validate_glb, save_project, load_project, newer_recovery, recovery_path
 from aethryx_engines import engine_catalog, prepare_character_alpha
 from aethryx_tools import analyze_project_diagnostics, execute_tool, tool_catalog
 from aethryx_viewer import viewer_catalog
@@ -82,6 +84,7 @@ class AethryxStudio(tk.Tk):
         self.seed = tk.IntVar(value=42)
         self.guidance = tk.DoubleVar(value=7.0)
         self.project_path = None
+        self._recovery_signature = None
         self.reference_regions = []
         self.anatomy_setup = None
         self.avatar_nodes = build_avatar_scene_graph()
@@ -119,6 +122,7 @@ class AethryxStudio(tk.Tk):
         self.bind("<Control-y>", lambda event: self.redo_scene_change())
         self._load_reference_preview()
         self._refresh_system_status()
+        self.after(45000, self._auto_recovery)
 
         if os.path.isfile(self.output_path.get()):
             self.load_model(self.output_path.get())
@@ -287,6 +291,7 @@ class AethryxStudio(tk.Tk):
         self.main_menu.add_cascade(label="Colores / materiales", menu=materials_menu)
 
         tools_menu = tk.Menu(self.main_menu, **menu_colors)
+        tools_menu.add_command(label="KIRIA · Herramientas del proyecto…", command=self.open_kiria_tools)
         tools_menu.add_command(label="Estadisticas de malla...", command=self.show_mesh_statistics)
         tools_menu.add_command(
             label="Motores y herramientas disponibles...",
@@ -537,6 +542,7 @@ class AethryxStudio(tk.Tk):
             return
         self._clear_scene()
         self.project_path = None
+        self._recovery_signature = None
         self.reference_regions = []
         self.anatomy_setup = None
         self.image_path.set("")
@@ -553,7 +559,19 @@ class AethryxStudio(tk.Tk):
         if not path:
             return
         try:
-            data = load_project(path)
+            recovery = newer_recovery(path)
+            chosen = (
+                recovery if recovery and messagebox.askyesno(
+                    "Recuperación disponible", "Hay una copia más reciente. ¿Abrirla en el proyecto activo?"
+                ) else path
+            )
+            try:
+                data = load_project(chosen)
+            except (ValueError, OSError) as exc:
+                if chosen == path:
+                    raise
+                data = load_project(path)
+                self.append_log(f"Recuperación descartada. Se abrió el proyecto original. {exc}")
             if data["model"] and os.path.splitext(data["model"])[1].lower() not in SUPPORTED_MODELS:
                 raise ValueError("Formato de malla no compatible.")
             if not messagebox.askyesno("Abrir proyecto", "¿Reemplazar la configuración actual? Los archivos existentes se conservan."):
@@ -571,6 +589,9 @@ class AethryxStudio(tk.Tk):
                 getattr(self, key).set(data["settings"][key])
             self._load_reference_preview()
             self.title(f"{PRODUCT_NAME} — {os.path.basename(path)}")
+            fields = self._project_fields()
+            fields.update(model=data["model"] or None, hidden_components=sorted(data["hidden_components"]))
+            self._recovery_signature = self._project_signature(fields)
             if data["model"]:
                 self.load_model(data["model"], hidden=data["hidden_components"])
             else:
@@ -587,17 +608,44 @@ class AethryxStudio(tk.Tk):
         if not path:
             return
         try:
-            save_project(path, image=self.image_path.get(), model=self.current_model_path,
-                         output=self.output_path.get(), steps=self.steps.get(), faces=self.faces.get(),
-                         seed=self.seed.get(), guidance=self.guidance.get(),
-                         references=self.reference_regions,
-                         avatar_nodes=self.avatar_nodes, hidden_components=self._hidden_component_nodes(),
-                         anatomy_setup=self.anatomy_setup)
+            fields = self._project_fields()
+            save_project(path, **fields)
+            self._recovery_signature = self._project_signature(fields)
             self.project_path = path
             self.title(f"{PRODUCT_NAME} — {os.path.basename(path)}")
             self.status.set("Proyecto guardado. Los recursos se conservan como archivos externos.")
         except Exception as exc:
             messagebox.showerror("Guardar proyecto", str(exc))
+
+    def _project_fields(self):
+        return {
+            "image": self.image_path.get(), "model": self.current_model_path, "output": self.output_path.get(),
+            "steps": self.steps.get(), "faces": self.faces.get(), "seed": self.seed.get(),
+            "guidance": self.guidance.get(), "references": self.reference_regions, "avatar_nodes": self.avatar_nodes,
+            "hidden_components": sorted(self._hidden_component_nodes()), "anatomy_setup": self.anatomy_setup,
+        }
+
+    @staticmethod
+    def _project_signature(fields):
+        return json.dumps(fields, sort_keys=True, ensure_ascii=False, allow_nan=False)
+
+    def _auto_recovery(self):
+        self._save_recovery_if_changed()
+        self.after(45000, self._auto_recovery)
+
+    def _save_recovery_if_changed(self):
+        try:
+            if (self.project_path and not Path(self.project_path).stem.endswith(".recovery")
+                    and not (self.generation_active or self.model_loading)):
+                fields = self._project_fields()
+                signature = self._project_signature(fields)
+                if signature != self._recovery_signature:
+                    snapshot = recovery_path(self.project_path)
+                    save_project(snapshot, **fields)
+                    self._recovery_signature = signature
+                    self.append_log(f"Recuperación local guardada en {snapshot.name}.")
+        except (OSError, ValueError, TypeError, tk.TclError) as exc:
+            self.append_log(f"No se pudo guardar la recuperación: {exc}")
 
     def close_window(self):
         if self.generation_active:
@@ -606,6 +654,7 @@ class AethryxStudio(tk.Tk):
         if self.model_loading:
             messagebox.showinfo("Carga activa", "Espera a que termine la carga antes de cerrar.")
             return
+        self._save_recovery_if_changed()
         self.destroy()
 
     def choose_image(self):
@@ -668,6 +717,21 @@ class AethryxStudio(tk.Tk):
         elif self.loaded_scene is not None:
             self.checkpoint_scene_change()
             self._apply_hidden_component_nodes(hidden)
+
+    def open_kiria_tools(self):
+        if not self._workspace_available():
+            return
+        nodes = [self.model_parts[index]["node"] for index in self._selected_part_indices()]
+        dialog = KiriaDialog(self, self._kiria_context(), self.loaded_scene, nodes, self._hidden_component_nodes())
+        self.wait_window(dialog)
+        if dialog.result:
+            path, hidden, action = dialog.result
+            self.append_log(f"KIRIA · {action} · {', '.join(nodes)}")
+            if path:
+                self.load_model(path, edit=True, hidden=hidden)
+            else:
+                self.checkpoint_scene_change()
+                self._apply_hidden_component_nodes(hidden)
 
     def analyze_character_sheet(self):
         if not self._workspace_available():
@@ -775,6 +839,11 @@ class AethryxStudio(tk.Tk):
                 if not isinstance(source_mesh, trimesh.Trimesh):
                     continue
                 preview_mesh = source_mesh.copy()
+                if node_name == BODY:
+                    mask = visible_body_faces(preview_mesh)
+                    if not mask.all():
+                        preview_mesh.update_faces(mask)
+                        preview_mesh.remove_unreferenced_vertices()
                 preview_mesh.apply_transform(transform)
                 vertices = np.asarray(preview_mesh.vertices, dtype=np.float32)
                 faces = np.asarray(preview_mesh.faces, dtype=np.int32)
@@ -1146,8 +1215,8 @@ class AethryxStudio(tk.Tk):
             + "\n\nVisores\n" + "\n".join(viewers),
         )
 
-    def show_project_diagnostics(self):
-        context = {
+    def _kiria_context(self):
+        return {
             "project_id": self.project_path or "unsaved-project",
             "revision": "1",
             "references": self.reference_regions,
@@ -1155,6 +1224,9 @@ class AethryxStudio(tk.Tk):
             "model": self.current_model_path,
             "image": self.image_path.get(),
         }
+
+    def show_project_diagnostics(self):
+        context = self._kiria_context()
         result = execute_tool(
             "analyze_project_diagnostics",
             {

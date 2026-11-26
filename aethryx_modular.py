@@ -9,6 +9,7 @@ from trimesh.visual.material import PBRMaterial
 from trimesh.visual.texture import TextureVisuals
 
 from aethryx_anatomy import anime_proportions, load_body_template
+from aethryx_materials import color_gradient
 from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY
 
 
@@ -287,9 +288,7 @@ def regional_hair(body, length=.35, volume=.055, root="#261a3a", tip="#9a578c"):
         ("lateral-derecho", (angle < -.81) & (angle >= -2.23)),
         ("posterior", abs(angle) > 2.23),
     )
-    strip = np.tile(np.linspace(1, 0, 256)[:, None, None], (1, 4, 1))
-    rgb = [np.array(Image.new("RGB", (1, 1), color))[0, 0] for color in (root, tip)]
-    texture = Image.fromarray(np.rint(strip * rgb[0] + (1 - strip) * rgb[1]).astype(np.uint8))
+    texture = color_gradient(root, tip)
     for name, mask in regions:
         selection = mask & outer
         zone = hair.submesh([selection], repair=False)[0]
@@ -336,6 +335,25 @@ def body_contacts(body, component):
 
 
 GARMENT_STYLES = {"top": (.53, .735), "falda": (.32, .55), "vestido": (.31, .735)}
+BODY_PREVIEW_BANDS = {"torso": (.56, .698, .117), "cadera": (.45, .51, .18)}
+
+
+def visible_body_faces(mesh):
+    bands = mesh.metadata.get("aethryx_hidden_body_bands", [])
+    selected = np.ones(len(mesh.faces), dtype=bool)
+    if not isinstance(bands, list) or not any(name in BODY_PREVIEW_BANDS for name in bands if isinstance(name, str)):
+        return selected
+    lo, hi = mesh.bounds
+    height = hi[1] - lo[1]
+    if height <= 0:
+        return selected
+    centers = mesh.triangles_center
+    y = (centers[:, 1] - lo[1]) / height
+    x = abs(centers[:, 0] - (lo[0] + hi[0]) / 2) / height
+    for region, (lower, upper, reach) in BODY_PREVIEW_BANDS.items():
+        if region in bands:
+            selected &= ~((y >= lower) & (y <= upper) & (x < reach))
+    return selected
 
 
 def fit_garment(body, clearance=.012, thickness=.006, color="#4266ac", *, style="top"):
@@ -349,6 +367,17 @@ def fit_garment(body, clearance=.012, thickness=.006, color="#4266ac", *, style=
     mesh.metadata["aethryx_garment"] = {"style": style, "clearance": clearance, "thickness": thickness}
     report = body_contacts(body, mesh)
     return apply_material(mesh, color, projection="cylindrical", roughness=.8), report
+
+
+def fit_garment_with_clearance(body, clearance, thickness, style):
+    attempts = [clearance]
+    if .003 <= clearance <= .06:
+        attempts.extend(c for c in (clearance * 1.35, clearance * 1.75) if c <= .06)
+    for amount in attempts:
+        mesh, report = fit_garment(body, amount, thickness, style=style)
+        if report["contacts"] == 0 and report["inside"] == 0:
+            return mesh, amount
+    raise ValueError(f"Se rechazó el ajuste. Contactos {report['contacts']}, vértices dentro {report['inside']}.")
 
 
 def _torso_loft(body, clearance, thickness, style="top"):

@@ -3,6 +3,7 @@
 ## 26 de noviembre de 2026 · Genesis Extended
 
 - Primer bloque de las fases 9–14. El administrador ofrece anatomía adicional, mapas PBR, conjuntos de ropa, exportación GLB articulada y un diagnóstico local de exportación. La revisión visual usa la plantilla CC0. [Cuatro vistas de prueba](test_assets/anime/genesis-extended/phase9-review.png)
+- La segunda entrega añade vista 3D de articulaciones y expresiones, comprobación de la deformación desde el GLB, herramientas locales KIRIA y recuperación no destructiva de `.aeth`. Pasaron 66 pruebas y el recorrido integrado de Studio. [Pose de prueba](test_assets/anime/genesis-extended/pose-review.png)
 - Unity 2022.3.22f1 está instalado. La comprobación batch quedó bloqueada por la licencia inactiva, por lo que el GLB solo está validado en AETHRYX. [Registro de la operación](AETHRYX_EXTENDED_PROGRESS.md)
 
 ## 26 de noviembre de 2026 · Genesis Phase 8

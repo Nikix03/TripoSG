@@ -2,6 +2,8 @@
 
 from pathlib import Path
 from queue import Empty, Queue
+import shutil
+from tempfile import TemporaryDirectory
 from threading import Thread
 from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
 import tkinter as tk
@@ -11,11 +13,12 @@ from PIL import Image
 
 from aethryx_anatomy import blocking_geometry_issues, validate_deformation
 from aethryx_bridge import inspect_avatar_glb
-from aethryx_materials import CHANNELS, RESOLUTIONS, save_pbr_maps, transform_uv, update_pbr_maps, uv_quality
+from aethryx_materials import CHANNELS, RESOLUTIONS, color_gradient, save_pbr_maps, transform_uv, update_pbr_maps, uv_quality
 from aethryx_rig import export_rigged_avatar, preview_expression, preview_pose
+from pose_dialog import PoseDialog
 from aethryx_modular import (
-    BODY, EYES, FACE_CONTROLS, ModularAvatar, anime_body, apply_material, avatar_eye,
-    body_contacts, facial_vertices, fit_garment, fit_hair, fitted_eyelids, head_frame,
+    BODY, BODY_PREVIEW_BANDS, EYES, FACE_CONTROLS, ModularAvatar, anime_body, apply_material, avatar_eye,
+    body_contacts, facial_vertices, fit_garment_with_clearance, fit_hair, fitted_eyelids, head_frame,
     mouth_components, recolor_iris, regional_hair, write_new_glb,
 )
 
@@ -43,13 +46,15 @@ class ComponentDialog(tk.Toplevel):
              ("Quitar", self.remove), ("Ocultar / mostrar", self.visibility), ("Guardar pieza…", self.save_piece)),
             (("Crear cuerpo anime", self.create_body), ("Rostro…", self.face), ("Crear ojos", self.eyes),
              ("Cabello…", self.hair), ("Prenda superior…", self.clothing)),
-            (("Color / iris…", self.material), ("UV y textura…", self.texture), ("Comprobar ajuste", self.contacts)),
+            (("Color / iris…", self.material), ("UV y textura…", self.texture), ("Comprobar ajuste", self.contacts),
+             ("Degradado por pieza…", self.gradient)),
             (("Perfil anime…", self.create_profile), ("Párpados", self.eyelids), ("Interior bucal", self.mouth),
-             ("Cabello por regiones…", self.hair_regions)),
+             ("Cabello por regiones…", self.hair_regions), ("Ocultar región corporal…", self.toggle_body_band)),
             (("Mapas PBR…", self.pbr), ("Diagnóstico UV…", self.diagnose_uv), ("Ajustar UV…", self.edit_uv),
              ("Guardar conjunto…", self.save_outfit), ("Abrir conjunto…", self.load_outfit)),
             (("Exportar rig GLB…", self.export_rig), ("Guardar pose de prueba…", self.export_pose),
-             ("Guardar expresión de prueba…", self.export_expression), ("Revisar rig GLB…", self.inspect_rig)),
+             ("Guardar expresión de prueba…", self.export_expression), ("Revisar rig GLB…", self.inspect_rig),
+             ("Vista de pose…", self.pose_window)),
         )):
             for column, (label, command) in enumerate(buttons):
                 button = ttk.Button(actions, text=label, command=command)
@@ -102,7 +107,7 @@ class ComponentDialog(tk.Toplevel):
         if not self.busy:
             self.destroy()
 
-    def _edit_background(self, operation, node):
+    def _edit_background(self, operation, node=None, *, updates_scene=True):
         self.busy = True
         for button in self.buttons:
             button.state(["disabled"])
@@ -125,7 +130,7 @@ class ComponentDialog(tk.Toplevel):
             for button in self.buttons:
                 button.state(["!disabled"])
             if success:
-                self.edited = True
+                self.edited |= updates_scene
                 self.status.set(result or "Cambio validado.")
                 self._refresh(node)
             else:
@@ -300,13 +305,29 @@ class ComponentDialog(tk.Toplevel):
         if values is None:
             return
         def generate():
-            garment, report = fit_garment(self._body(), *values, style=style)
-            if report["contacts"] or report["inside"] != 0:
-                raise ValueError(f"Se rechazó el ajuste. Contactos {report['contacts']}, vértices dentro {report['inside']}.")
+            garment, clearance = fit_garment_with_clearance(self._body(), *values, style)
             self._new_fitted(node, garment)
-            return "Prenda cerrada, cero contactos y cero vértices dentro del cuerpo."
+            return f"Prenda cerrada con holgura {clearance:.4f}, cero contactos y cero vértices dentro del cuerpo."
         node = "prenda-superior" if style == "top" else f"prenda-{style}"
         self._edit_background(generate, node)
+
+    def toggle_body_band(self):
+        chosen = simpledialog.askstring("Región corporal en el visor", "Escribe torso o cadera para alternar visibilidad.",
+                                         initialvalue="torso", parent=self)
+        if chosen is None:
+            return
+        key = chosen.strip().lower()
+
+        def update():
+            if key not in BODY_PREVIEW_BANDS:
+                raise ValueError("Región corporal desconocida.")
+            body = self._body(world=False)
+            hidden = set(body.metadata.get("aethryx_hidden_body_bands", []))
+            hidden.symmetric_difference_update({key})
+            body.metadata["aethryx_hidden_body_bands"] = sorted(hidden)
+            self.avatar.replace(BODY, body)
+            return f"{key.capitalize()} {'oculto' if key in hidden else 'visible'} en el visor."
+        self._edit(update, BODY)
 
     def save_outfit(self):
         path = self._save_path("Guardar conjunto de prendas", "conjunto")
@@ -324,11 +345,20 @@ class ComponentDialog(tk.Toplevel):
             return
         path = self._save_path("Guardar GLB con rig y expresiones", "avatar-articulado")
         if path:
-            try:
-                report = export_rigged_avatar(self.avatar.scene, path, influences)
-                self.status.set(f"GLB con {report['joints']} huesos, {len(report['morphs'])} expresiones y animación de prueba.")
-            except Exception as exc:
-                messagebox.showerror("Exportar rig", str(exc), parent=self)
+            def run():
+                destination = Path(path)
+                if destination.suffix.lower() != ".glb" or destination.exists():
+                    raise ValueError("Elige un archivo GLB nuevo.")
+                with TemporaryDirectory(dir=destination.parent) as folder:
+                    staged = Path(folder) / "avatar.glb"
+                    report = export_rigged_avatar(self.avatar.scene, staged, influences)
+                    checked = inspect_avatar_glb(staged)
+                    if not checked["valid_native_glb"]:
+                        raise ValueError("\n".join(checked["errors"]))
+                    with staged.open("rb") as source, destination.open("xb") as output:
+                        shutil.copyfileobj(source, output)
+                return f"GLB validado con {report['joints']} huesos, {len(report['morphs'])} morphs y un clip de prueba."
+            self._edit_background(run, updates_scene=False)
 
     def export_pose(self):
         path = self._save_path("Guardar una pose estática para inspeccionar en Studio", "pose-de-prueba")
@@ -338,6 +368,14 @@ class ComponentDialog(tk.Toplevel):
                 self.status.set(f"Pose guardada en {path}.")
             except Exception as exc:
                 messagebox.showerror("Pose de prueba", str(exc), parent=self)
+
+    def pose_window(self):
+        try:
+            dialog = PoseDialog(self, self.avatar.scene, self.avatar.hidden)
+            self.wait_window(dialog)
+            self.grab_set()
+        except (ValueError, RuntimeError) as exc:
+            messagebox.showerror("Vista de pose", str(exc), parent=self)
 
     def inspect_rig(self):
         path = filedialog.askopenfilename(parent=self, filetypes=[("Avatar GLB", "*.glb")])
@@ -524,6 +562,26 @@ class ComponentDialog(tk.Toplevel):
             roughness = getattr(material, "roughnessFactor", None)
             apply_material(mesh, color, projection=projection.strip().lower(), image=image,
                            roughness=.57 if roughness is None else roughness)
+            self.avatar.replace(node, mesh)
+        self._edit(update, node)
+
+    def gradient(self):
+        node = self._selected()
+        if not node:
+            return
+        _, top = colorchooser.askcolor(color="#ff268f", title="Color superior", parent=self)
+        if not top:
+            return
+        _, bottom = colorchooser.askcolor(color="#00d9ff", title="Color inferior", parent=self)
+        if not bottom:
+            return
+        def update():
+            mesh = self.avatar.get(node)
+            material = getattr(mesh.visual, "material", None)
+            roughness = getattr(material, "roughnessFactor", None)
+            projection = None if getattr(mesh.visual, "uv", None) is not None else "cylindrical"
+            apply_material(mesh, "#ffffff", projection=projection, roughness=.57 if roughness is None else roughness,
+                           image=color_gradient(top, bottom))
             self.avatar.replace(node, mesh)
         self._edit(update, node)
 

@@ -22,8 +22,27 @@
 - La malla corporal conserva su topología. El cabello y los párpados tienen mallas independientes. Una orientación invertida del párpado inferior se detectó con la prueba de volumen y se corrigió. La revisión visual permitió bajar el interior bucal a la altura de los labios.
 - El render usa PyVista con cierre explícito de cada cámara. La versión instalada de `Plotter` rechazó el gestor de contexto.
 - Los conjuntos se guardan con nodos de prendas en GLB y la transferencia inicial de pesos usa el vértice corporal más cercano. El paso nativo conserva el original. Las animaciones y expresiones exportadas requieren revisión visual y una prueba en el editor de destino.
-- Pruebas del bloque mediante `.\.venv\Scripts\python.exe -m unittest discover -s tests`. La prueba de Unity se realizó en un proyecto temporal y sin activar cuentas, importar SDK ni instalar paquetes.
+- Primer bloque publicado y validado en `fb53de6` con 62 pruebas. La prueba de Unity se realizó en un proyecto temporal y sin activar cuentas, importar SDK ni instalar paquetes.
+
+## Segundo bloque
+
+| Fase | Avance y comprobación | Pendiente |
+| --- | --- | --- |
+| 11 · Vestuario | La prenda puede reintentar con hasta dos holguras mayores dentro del rango configurado. Studio oculta torso o cadera en el visor de forma reversible y mantiene todas las caras del GLB. El vestido medido dio 0 contactos y 0 vértices interiores en reposo y en la pose de prueba. [Revisión de la pose](test_assets/anime/genesis-extended/pose-review.png). | El vestido muestra un pliegue por transferencia de pesos entre las piernas. Los prototipos de zapato y guante ajustados por normales se descartaron por cruces y penetraciones. Los conteos de contacto y vértices internos fueron 1.754/223 y 328/40 respectivamente. |
+| 12–13 · Pose y expresión | Vista giratoria con esqueleto, reposo, aproximación a T, rotación por articulación y control de intensidad facial. Se verificó movimiento unilateral de ojo y párpado. La validación GLB vuelve a leer desde disco el clip, pesos y matrices inversas y calcula la deformación. | Colocación anatómica de articulaciones, control de dedos y calidad de expresiones en una referencia de Nikix. |
+| 15 · KIRIA | Avance parcial. Panel de contexto y herramientas locales, con diagnóstico de fondo y comandos estructurados para mostrar, ocultar o cambiar color. Previsualización textual, confirmación, registro y deshacer por la vía de escena existente. | Conversación con inferencia real, conexión de proveedores y extensión del registro a proporciones y vestuario. Ollama no apareció instalado ni en ejecución. [API local de Ollama](https://docs.ollama.com/api/tags). |
+| 16 · Studio Pre-Alpha | Avance parcial. Recuperación lateral `.recovery.aeth` cada 45 s cuando cambia un proyecto guardado y al cerrar. Se ofrece al reabrir si es más reciente y se conserva el original. Lanzador con diagnóstico local y exportación de rig en segundo plano. | Instalación limpia, recuperación de escenas sin guardar, cancelación de trabajos nuevos y prueba Unity/VRChat. |
+
+- La prueba integrada con Tk abrió un personaje con vestido, confirmó un comando KIRIA, guardó una recuperación, abrió la pose T aproximada y auditó un GLB de 53 articulaciones, 37.124 caras y 15 visemas. El fotograma leído del GLB desplazó un vértice corporal hasta 0,2147 unidades de escena. El diagnóstico del lanzador detectó Python 3.10.11, la RTX 5070 de 12.227 MiB y las dependencias esenciales. No se instaló software nuevo.
+- Pasaron 66 pruebas mediante `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
+
+### Uso reproducible
+
+1. Ejecutar `iniciar-aethryx-studio.bat --diagnostico` y luego `iniciar-aethryx-studio.bat`.
+2. Abrir **Escena → Administrador de componentes**, crear el cuerpo y las piezas, y guardar la escena modular independiente.
+3. Usar **Vista de pose** para comprobar articulaciones y expresiones. Exportar un nuevo GLB articulado y revisarlo con `.\.venv\Scripts\python.exe -m aethryx_bridge avatar.glb`.
+4. Guardar el proyecto `.aeth` en **Archivo**. El proyecto enlaza sus recursos relativos cuando es posible.
 
 ## Continuidad
 
-- Siguiente tarea concreta dentro de la operación. Conectar los diagnósticos KIRIA al proyecto activo y añadir recuperación local de proyectos.
+- Siguiente tarea concreta. Ajustar la transferencia de pesos en prendas acampanadas y validar la geometría de mangas y calzado con cortes seccionales, conservando el cuerpo completo. La licencia activa de Unity es una dependencia separada para el puente y el SDK.
