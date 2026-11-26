@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import struct
 import tempfile
+from copy import deepcopy
 
 from character_sheet import validate_reference_regions
 
@@ -56,6 +57,38 @@ def _relative(value, parent):
     except ValueError:  # Windows volumes differ
         return str(path)
 
+def _modular_data(hidden, anatomy, parent, *, saving):
+    if (not isinstance(hidden, (list, tuple)) or any(not isinstance(name, str) or not name for name in hidden)
+            or len(set(hidden)) != len(hidden)):
+        raise ValueError("Los componentes ocultos deben tener nombres únicos.")
+    if anatomy is None:
+        return list(hidden), None
+    if not isinstance(anatomy, dict) or not isinstance(anatomy.get("views"), dict):
+        raise ValueError("El ajuste anatómico debe contener vistas.")
+    if set(anatomy["views"]) - {"front", "side", "back"}:
+        raise ValueError("El ajuste anatómico contiene una vista desconocida.")
+    anatomy = deepcopy(anatomy)
+
+    def resource(value):
+        if not isinstance(value, str):
+            raise ValueError("Ruta de ajuste anatómico inválida.")
+        if not value:
+            return ""
+        return _relative(value, parent) if saving else str((parent / value).resolve())
+
+    if anatomy.get("bundled_template"):
+        anatomy["template"] = ""
+    elif "template" in anatomy:
+        anatomy["template"] = resource(anatomy["template"])
+    for view in anatomy["views"].values():
+        if not isinstance(view, dict):
+            raise ValueError("Vista anatómica inválida.")
+        for key in ("image", "mask", "body_mask"):
+            if key in view:
+                view[key] = resource(view[key])
+    return list(hidden), anatomy
+
+
 def save_project(
     path,
     *,
@@ -68,6 +101,8 @@ def save_project(
     guidance,
     references=(),
     avatar_nodes=None,
+    hidden_components=(),
+    anatomy_setup=None,
 ):
     validate_settings(steps, faces, seed, guidance)
     path = Path(path).resolve()
@@ -76,10 +111,12 @@ def save_project(
     reference_regions = validate_reference_regions(references)
     for region in reference_regions:
         region["path"] = _relative(region["path"], path.parent)
-    data = {"format": "AETHRYX", "version": 2,
+    hidden, anatomy = _modular_data(hidden_components, anatomy_setup, path.parent, saving=True)
+    data = {"format": "AETHRYX", "version": 3,
             "image": _relative(image, path.parent), "model": _relative(model, path.parent),
             "output": _relative(output, path.parent), "references": reference_regions,
             "avatar_nodes": avatar_nodes or [],
+            "hidden_components": hidden, "anatomy_setup": anatomy,
             "settings": {"steps": steps, "faces": faces, "seed": seed, "guidance": guidance}}
     temp = None
     try:
@@ -96,7 +133,7 @@ def load_project(path):
     if path.stat().st_size > 1024 * 1024:
         raise ValueError("Proyecto demasiado grande.")
     data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or data.get("format") != "AETHRYX" or data.get("version") not in (1, 2):
+    if not isinstance(data, dict) or data.get("format") != "AETHRYX" or data.get("version") not in (1, 2, 3):
         raise ValueError("Formato de proyecto no compatible.")
     settings = data.get("settings")
     if not isinstance(settings, dict):
@@ -131,4 +168,7 @@ def load_project(path):
     if not isinstance(avatar_nodes, list):
         raise ValueError("El scene graph del avatar no es válido.")
     result["avatar_nodes"] = avatar_nodes
+    result["hidden_components"], result["anatomy_setup"] = _modular_data(
+        data.get("hidden_components", []), data.get("anatomy_setup"), path.parent, saving=False,
+    )
     return result

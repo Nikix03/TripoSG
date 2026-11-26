@@ -19,7 +19,7 @@ from aethryx_anatomy import (
 from aethryx_engines import suggest_anatomical_points
 from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
 from aethryx_reference import (
-    SEMANTIC_COLORS, compare_silhouette, reference_silhouette, segment_anime_reference,
+    SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, reference_silhouette, segment_anime_reference,
     silhouette_calibration,
 )
 from proportion_dialog import ProportionDialog
@@ -48,6 +48,7 @@ class AnatomyDialog(tk.Toplevel):
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.result = None
+        self.draft = None
         self.profile = tk.StringVar(value="Anime neutro")
         self.template_path = None
         self.template = None
@@ -87,6 +88,7 @@ class AnatomyDialog(tk.Toplevel):
             ("Guardar ajuste…", self._save_setup),
             ("Cargar imagen…", self._load_image),
             ("Máscara RGB…", self._load_mask),
+            ("Máscara corporal…", self._load_body_mask),
             ("Paleta…", self._edit_palette),
             ("Segmentar ONNX…", self._segment_current),
         ):
@@ -111,6 +113,7 @@ class AnatomyDialog(tk.Toplevel):
                         command=self._redraw).pack(side="left")
         ttk.Button(views, text="Sugerir puntos (MediaPipe)", command=self._suggest).pack(side="left", padx=6)
         ttk.Button(views, text="Alinear y detectar vistas", command=self._auto_align).pack(side="left", padx=6)
+        ttk.Button(views, text="Importar See-through V2…", command=self._import_see_through).pack(side="left")
 
         panels = ttk.Panedwindow(self, orient="horizontal")
         panels.pack(fill="both", expand=True, padx=8)
@@ -147,6 +150,12 @@ class AnatomyDialog(tk.Toplevel):
 
     def _close(self):
         if not self.busy:
+            if self.images and self.template_path:
+                try:
+                    self.draft = self._build_manifest(False)
+                except ValueError as exc:
+                    self._error(exc)
+                    return
             self.destroy()
 
     def _load_template(self):
@@ -238,6 +247,12 @@ class AnatomyDialog(tk.Toplevel):
         self._change_view()
 
     def _load_mask(self):
+        self._select_mask("mask", "Máscara semántica")
+
+    def _load_body_mask(self):
+        self._select_mask("body_mask", "Silueta corporal")
+
+    def _select_mask(self, key, label):
         if self.busy or self.view not in self.images:
             return
         path = filedialog.askopenfilename(parent=self, filetypes=[("Máscara RGB", "*.png")])
@@ -249,15 +264,22 @@ class AnatomyDialog(tk.Toplevel):
             except (OSError, ValueError) as exc:
                 self._error(exc)
                 return
-            self.views[self.view]["mask"] = path
+            self.views[self.view][key] = path
             self._invalidate_comparison()
-            self.status.set(f"Máscara cargada en {self.view_label.get()}.")
+            self.status.set(f"{label} cargada en {self.view_label.get()}.")
 
-    def _segment_current(self):
+    def _import_see_through(self):
+        if self.busy or self.view not in self.images:
+            return
+        path = filedialog.askopenfilename(parent=self, filetypes=[("Máscaras booleanas V2", "*.npy")])
+        if path:
+            self._segment_current(external=path)
+
+    def _segment_current(self, external=None):
         view = self.view
         if self.busy or view not in self.images:
             return
-        if self.segmenter is None:
+        if external is None and self.segmenter is None:
             model = filedialog.askopenfilename(parent=self, filetypes=[("ONNX multiclase", "*.onnx")])
             if not model:
                 return
@@ -314,6 +336,10 @@ class AnatomyDialog(tk.Toplevel):
             ttk.Button(preview, text="Guardar y usar máscara", command=save).pack(pady=(0, 8))
             self.wait_window(preview)
             self.grab_set()
+        if external is not None:
+            self._work("Leyendo las máscaras externas de See-through V2…",
+                       lambda: import_see_through_v2(external, image.size), accept)
+            return
         model, labels = self.segmenter
         # Prompt again on the next request if the selected provider fails.
         def segment():
@@ -587,7 +613,7 @@ class AnatomyDialog(tk.Toplevel):
         if self.busy or self.template is None or not self.images:
             return
         sources = {
-            name: (image, self.views[name]["image"], self.views[name].get("mask"))
+            name: (image, self.views[name]["image"], self.views[name].get("body_mask"))
             for name, image in self.images.items()
         }
         def detect():
@@ -682,8 +708,11 @@ class AnatomyDialog(tk.Toplevel):
 
     def _restore_setup(self, path):
         data = json.loads(path.read_text(encoding="utf-8"))
+        self.load_setup(data, path.parent)
+
+    def load_setup(self, data, root=Path(".")):
         template_path = str(BUNDLED_BODY if data.get("bundled_template")
-                            else (path.parent / data["template"]).resolve())
+                            else (root / data["template"]).resolve())
         template = load_body_template(template_path)
         indices = data["vertex_indices"]
         if (template.extents[1] <= 0 or len(indices) != len(set(indices))
@@ -705,9 +734,9 @@ class AnatomyDialog(tk.Toplevel):
                 vertex: (None, False) if point == [None, None] else (point, vertex in suggested)
                 for vertex, point in zip(indices, landmarks) if point != [None, None] or vertex in hidden
             }
-            for asset in ("image", "mask"):
+            for asset in ("image", "mask", "body_mask"):
                 if asset in view:
-                    view[asset] = str((path.parent / view[asset]).resolve())
+                    view[asset] = str((root / view[asset]).resolve())
             if "image" in view:
                 with Image.open(view["image"]) as image:
                     images[name] = image.convert("RGBA")
@@ -752,13 +781,14 @@ class AnatomyDialog(tk.Toplevel):
             comparisons = {}
             for name, view in data["views"].items():
                 mask = None
-                if view.get("mask"):
-                    with Image.open(view["mask"]) as source:
+                if view.get("body_mask"):
+                    with Image.open(view["body_mask"]) as source:
                         mask = source.convert("RGB")
                 comparisons[name], iou = compare_silhouette(
                     mesh, self.images[name], view["projection"], mask,
                 )
                 report.setdefault("silhouette_iou", {})[name] = iou
+                report.setdefault("silhouette_kind", {})[name] = "body" if mask is not None else "reference"
             return mesh, patches, report, errors, comparisons
         self._work("Ajustando y validando la geometría en CPU…", solve, lambda result: self._review(data, result))
 
@@ -777,7 +807,8 @@ class AnatomyDialog(tk.Toplevel):
         winding = "sí" if report["winding_consistent"] else "no"
         self.status.set("Validación terminada. Puedes guardar o corregir el ajuste.")
         silhouette = ", ".join(
-            f"{VIEW_LABELS[name]} {value:.0%}" for name, value in report["silhouette_iou"].items()
+            f"{VIEW_LABELS[name]} ({'corporal' if report['silhouette_kind'][name] == 'body' else 'referencia'}) {value:.0%}"
+            for name, value in report["silhouette_iou"].items()
             if value is not None
         ) or "sin primer plano fiable"
         if not messagebox.askyesno("Validación del cuerpo", (
@@ -789,6 +820,7 @@ class AnatomyDialog(tk.Toplevel):
             f'Simetría X, percentil 95 {report["symmetry_p95_height"]:.2%} de la altura\n\n'
             f"Reproyección antes de estilizar\n{summary}\n"
             f"IoU de siluetas · {silhouette}\n"
+            "Una silueta de referencia puede incluir ropa y cabello.\n"
             "Verde coincide · rosa solo referencia · celeste solo modelo.\n\n¿Guardar el cuerpo completo?"
         ), parent=self):
             return

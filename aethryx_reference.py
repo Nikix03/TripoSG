@@ -13,6 +13,25 @@ SEMANTIC_COLORS = {
 }
 
 
+def import_see_through_v2(path, size):
+    """Collapse externally inferred 19-layer V2 masks to visible semantic classes."""
+    width, height = size
+    masks = np.load(path, mmap_mode="r", allow_pickle=False)
+    if not isinstance(masks, np.ndarray) or masks.dtype != np.bool_ or masks.shape != (19, height, width):
+        raise ValueError("Se requiere el NPY booleano V2 con forma [19, alto, ancho] de la referencia.")
+    categories = (
+        ("body", (9,)), ("face", (2, 3, 5, 7, 8)), ("clothing", (11, 12, 13, 14, 15)),
+        ("hair", (0,)), ("accessories", (1, 4, 6, 10, 16, 17, 18)),
+    )
+    rgb = np.zeros((height, width, 3), dtype=np.uint8)
+    for label, indices in categories:
+        foreground = np.zeros((height, width), dtype=bool)
+        for index in indices:
+            foreground |= masks[index]
+        rgb[foreground] = SEMANTIC_COLORS[label]
+    return Image.fromarray(rgb)
+
+
 def reference_silhouette(image, semantic_mask=None):
     explicit = semantic_mask is not None
     if semantic_mask is not None:

@@ -7,6 +7,34 @@ from PIL import Image
 from studio_project import save_project, load_project, validate_settings, validate_glb
 
 class ProjectTests(unittest.TestCase):
+    def test_modular_project_reopens_references_masks_controls_and_visibility(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            project = root / "avatar.aeth"
+            scene = root / "avatar.glb"
+            scene.touch()
+            anatomy = {"bundled_template": True, "template": "C:/unused.ply",
+                       "proportions": {"head": 1.18},
+                       "views": {"front": {kind: str(root / f"{kind}.png")
+                                           for kind in ("image", "mask", "body_mask")}}}
+            anatomy["views"]["front"] = {kind: str(Path(path).resolve())
+                                             for kind, path in anatomy["views"]["front"].items()}
+            save_project(project, image="", model=scene, output="", steps=50, faces=-1, seed=42,
+                         guidance=7, hidden_components=["cabello"], anatomy_setup=anatomy)
+            stored = json.loads(project.read_text(encoding="utf-8"))
+            self.assertEqual(stored["version"], 3)
+            self.assertEqual(stored["anatomy_setup"]["template"], "")
+            self.assertEqual(stored["anatomy_setup"]["views"]["front"]["body_mask"], "body_mask.png")
+            reopened = load_project(project)
+            self.assertEqual(reopened["hidden_components"], ["cabello"])
+            self.assertEqual(reopened["anatomy_setup"]["proportions"], {"head": 1.18})
+            self.assertEqual(reopened["anatomy_setup"]["views"], anatomy["views"])
+            stored.update(version=2)
+            del stored["hidden_components"], stored["anatomy_setup"]
+            project.write_text(json.dumps(stored), encoding="utf-8")
+            self.assertEqual(load_project(project)["hidden_components"], [])
+            self.assertIsNone(load_project(project)["anatomy_setup"])
+
     def test_round_trip(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

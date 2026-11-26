@@ -1,4 +1,6 @@
+import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -24,6 +26,7 @@ from character_sheet import (
 )
 from character_sheet_dialog import CharacterSheetDialog
 from anatomy_dialog import AnatomyDialog
+from modular_dialog import ComponentDialog
 from studio_project import validate_settings, validate_glb, save_project, load_project
 from aethryx_engines import engine_catalog, prepare_character_alpha
 from aethryx_tools import analyze_project_diagnostics, execute_tool, tool_catalog
@@ -80,6 +83,7 @@ class AethryxStudio(tk.Tk):
         self.guidance = tk.DoubleVar(value=7.0)
         self.project_path = None
         self.reference_regions = []
+        self.anatomy_setup = None
         self.avatar_nodes = build_avatar_scene_graph()
         self.generation_active = False
         self.model_loading = False
@@ -270,6 +274,7 @@ class AethryxStudio(tk.Tk):
         scene_menu.add_command(label="Aislar seleccion", command=self.isolate_selection)
         scene_menu.add_command(label="Mostrar todos los objetos", command=self.show_all_objects)
         scene_menu.add_command(label="Scene graph del avatar...", command=self.show_avatar_scene_graph)
+        scene_menu.add_command(label="Administrador de componentes…", command=self.manage_components)
         scene_menu.add_command(
             label="Exportar componentes 3D desconectados...",
             command=self.export_disconnected_components,
@@ -278,7 +283,7 @@ class AethryxStudio(tk.Tk):
         self.main_menu.add_cascade(label="Escena", menu=scene_menu)
 
         materials_menu = tk.Menu(self.main_menu, **menu_colors)
-        materials_menu.add_command(label="Editor de color, UV y PBR - proximo", state="disabled")
+        materials_menu.add_command(label="Materiales y UV por componente…", command=self.manage_components)
         self.main_menu.add_cascade(label="Colores / materiales", menu=materials_menu)
 
         tools_menu = tk.Menu(self.main_menu, **menu_colors)
@@ -533,6 +538,7 @@ class AethryxStudio(tk.Tk):
         self._clear_scene()
         self.project_path = None
         self.reference_regions = []
+        self.anatomy_setup = None
         self.image_path.set("")
         self.output_path.set("")
         self.steps.set(50); self.faces.set(-1); self.seed.set(42); self.guidance.set(7.0)
@@ -555,6 +561,7 @@ class AethryxStudio(tk.Tk):
             self._clear_scene()
             self.project_path = path
             self.reference_regions = data["references"]
+            self.anatomy_setup = data["anatomy_setup"]
             self.avatar_nodes = data.get("avatar_nodes") or build_avatar_scene_graph(
                 self.reference_regions,
                 self.model_stats,
@@ -565,7 +572,7 @@ class AethryxStudio(tk.Tk):
             self._load_reference_preview()
             self.title(f"{PRODUCT_NAME} — {os.path.basename(path)}")
             if data["model"]:
-                self.load_model(data["model"])
+                self.load_model(data["model"], hidden=data["hidden_components"])
             else:
                 self.status.set("Proyecto abierto.")
         except Exception as exc:
@@ -584,7 +591,8 @@ class AethryxStudio(tk.Tk):
                          output=self.output_path.get(), steps=self.steps.get(), faces=self.faces.get(),
                          seed=self.seed.get(), guidance=self.guidance.get(),
                          references=self.reference_regions,
-                         avatar_nodes=self.avatar_nodes)
+                         avatar_nodes=self.avatar_nodes, hidden_components=self._hidden_component_nodes(),
+                         anatomy_setup=self.anatomy_setup)
             self.project_path = path
             self.title(f"{PRODUCT_NAME} — {os.path.basename(path)}")
             self.status.set("Proyecto guardado. Los recursos se conservan como archivos externos.")
@@ -616,14 +624,50 @@ class AethryxStudio(tk.Tk):
         if not self._workspace_available():
             return
         dialog = AnatomyDialog(self)
+        if self.anatomy_setup:
+            try:
+                dialog.load_setup(self.anatomy_setup)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                dialog.status.set(f"No se pudo recuperar el ajuste. {exc}")
         self.wait_window(dialog)
         if dialog.result is None:
+            if dialog.draft is not None:
+                self.anatomy_setup = dialog.draft
             return
         body, patches = dialog.result
+        setup = Path(body).parent / "referencias.json"
+        if setup.is_file():
+            self.anatomy_setup = json.loads(setup.read_text(encoding="utf-8"))
         self.append_log(f"Genesis: cuerpo base guardado en {body}")
         if patches:
             self.append_log(f"Genesis: parches de referencia disponibles para importar en {patches}")
         self.load_model(str(body), edit=True)
+
+    def _hidden_component_nodes(self):
+        return [part["node"] for part, artist in zip(self.model_parts, self.mesh_artists)
+                if not artist.get_visible()]
+
+    def _apply_hidden_component_nodes(self, hidden):
+        hidden = set(hidden)
+        for index, part in enumerate(self.model_parts):
+            visible = part["node"] not in hidden
+            self.mesh_artists[index].set_visible(visible)
+            self.scene_tree.item(self.part_to_tree[index], text=f"[{'x' if visible else ' '}] {part['node']}")
+        self.model_canvas.draw_idle()
+
+    def manage_components(self):
+        if not self._workspace_available():
+            return
+        dialog = ComponentDialog(self, self.loaded_scene, self._hidden_component_nodes())
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+        path, hidden = dialog.result
+        if path:
+            self.load_model(path, edit=True, hidden=hidden)
+        elif self.loaded_scene is not None:
+            self.checkpoint_scene_change()
+            self._apply_hidden_component_nodes(hidden)
 
     def analyze_character_sheet(self):
         if not self._workspace_available():
@@ -700,7 +744,7 @@ class AethryxStudio(tk.Tk):
         if path:
             self.load_model(path)
 
-    def load_model(self, path, *, edit=False):
+    def load_model(self, path, *, edit=False, hidden=None):
         if not os.path.isfile(path):
             messagebox.showerror("No se encontro el archivo", path)
             return
@@ -713,9 +757,9 @@ class AethryxStudio(tk.Tk):
         self.model_loading = True
         self.status.set(f"Cargando malla: {os.path.basename(path)}")
         self.append_log(f"Importando malla: {path}")
-        threading.Thread(target=self._prepare_model, args=(request_id, path, edit), daemon=True).start()
+        threading.Thread(target=self._prepare_model, args=(request_id, path, edit, hidden), daemon=True).start()
 
-    def _prepare_model(self, request_id, path, edit=False):
+    def _prepare_model(self, request_id, path, edit=False, hidden=None):
         try:
             scene = trimesh.load(path, force="scene")
             if isinstance(scene, trimesh.Trimesh):
@@ -741,6 +785,10 @@ class AethryxStudio(tk.Tk):
                     mesh_set = self._decimate_preview(vertices, faces)
                     vertices = mesh_set.current_mesh().vertex_matrix().astype(np.float32)
                     faces = mesh_set.current_mesh().face_matrix().astype(np.int32)
+                else:
+                    texture_color = self._preview_texture_color(preview_mesh, faces)
+                    if texture_color is not None:
+                        color = texture_color
                 parts.append(
                     {
                         "node": str(node_name),
@@ -768,9 +816,33 @@ class AethryxStudio(tk.Tk):
                 "watertight": all(mesh.is_watertight for mesh in geometries),
                 "bounds": bounds,
             }
-            self.after(0, lambda: self._finish_model_load(request_id, path, scene, parts, stats, edit))
+            self.after(0, lambda: self._finish_model_load(request_id, path, scene, parts, stats, edit, hidden))
         except Exception as exc:
             self.after(0, lambda error=str(exc): self._model_load_failed(request_id, error))
+
+    @staticmethod
+    def _preview_texture_color(mesh, faces):
+        visual = mesh.visual
+        uv = getattr(visual, "uv", None)
+        material = getattr(visual, "material", None)
+        texture = getattr(material, "baseColorTexture", None)
+        if uv is None or texture is None or len(uv) != len(mesh.vertices):
+            return None
+        coords = np.asarray(uv, dtype=float)[faces]
+        if not np.isfinite(coords).all():
+            return None
+        # Keep UV samples on the correct side of the cylindrical seam.
+        if mesh.metadata.get("aethryx_uv_projection") == "cylindrical":
+            wrap = np.ptp(coords[:, :, 0], axis=1) > .5
+            coords[wrap, :, 0] += coords[wrap, :, 0] < .5
+        sample = coords.mean(axis=1)
+        sample[:, 0] %= 1
+        colors = material.to_color(sample)
+        if colors is None:
+            return None
+        factor = getattr(material, "baseColorFactor", None)
+        tint = np.asarray(factor, dtype=float)[:3] / 255.0 if factor is not None else 1.0
+        return np.clip(np.asarray(colors)[:, :3] / 255.0 * tint, 0, 1)
 
     @staticmethod
     def _preview_color(mesh, index):
@@ -807,15 +879,19 @@ class AethryxStudio(tk.Tk):
         mesh_set.meshing_decimation_quadric_edge_collapse(targetfacenum=MAX_PREVIEW_FACES)
         return mesh_set
 
-    def _finish_model_load(self, request_id, path, scene, parts, stats, edit):
+    def _finish_model_load(self, request_id, path, scene, parts, stats, edit, hidden=None):
         if request_id != self.load_request_id:
             return
         if edit and self.loaded_scene is not None:
+            if hidden is None:
+                hidden = self._hidden_component_nodes()
             self.checkpoint_scene_change()
         else:
             self.scene_history.clear()
             self.scene_future.clear()
         self._show_model(request_id, path, scene, parts, stats)
+        if hidden:
+            self._apply_hidden_component_nodes(hidden)
 
     def _show_model(self, request_id, path, scene, parts, stats):
         if request_id != self.load_request_id:
@@ -841,11 +917,11 @@ class AethryxStudio(tk.Tk):
                 edgecolor="none",
                 linewidth=0,
                 antialiased=False,
-                shade=True,
+                shade=not isinstance(part["color"], np.ndarray),
             )
             self.model_axes.add_collection3d(artist)
             self.mesh_artists.append(artist)
-            part["shaded_color"] = artist.get_facecolor()
+            part["shaded_color"] = part["color"] if isinstance(part["color"], np.ndarray) else artist.get_facecolor()
             item_id = f"object-{index}"
             label = part["node"] if part["node"] != part["geometry"] else part["node"]
             self.scene_tree.insert("", "end", iid=item_id, text=f"[x] {label}")

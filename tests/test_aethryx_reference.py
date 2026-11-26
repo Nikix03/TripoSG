@@ -1,3 +1,5 @@
+from pathlib import Path
+import tempfile
 import unittest
 
 import numpy as np
@@ -5,11 +7,25 @@ from PIL import Image, ImageDraw
 import trimesh
 
 from aethryx_reference import (
-    SEMANTIC_COLORS, compare_silhouette, decode_semantic_scores, reference_silhouette, silhouette_calibration,
+    SEMANTIC_COLORS, compare_silhouette, decode_semantic_scores, import_see_through_v2,
+    reference_silhouette, silhouette_calibration,
 )
 
 
 class ReferenceTests(unittest.TestCase):
+    def test_see_through_bridge_preserves_visible_labels_without_inventing_body(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "v2.npy"
+            masks = np.zeros((19, 4, 6), dtype=bool)
+            for pixel, index in enumerate((9, 2, 11, 0, 18)):
+                masks[index, :, pixel] = True
+            masks[0, :, 4] = True
+            np.save(path, masks)
+            image = import_see_through_v2(path, (6, 4))
+            order = ("body", "face", "clothing", "hair", "accessories", "background")
+            np.testing.assert_array_equal(np.asarray(image)[0], [SEMANTIC_COLORS[key] for key in order])
+            with self.assertRaises(ValueError):
+                import_see_through_v2(path, (4, 6))
     def test_alpha_silhouette_alignment_and_bounded_comparison(self):
         image = Image.new("RGBA", (100, 100), (255, 255, 255, 0))
         ImageDraw.Draw(image).rectangle((30, 30, 70, 70), fill="white")
