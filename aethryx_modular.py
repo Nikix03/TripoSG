@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from scipy.spatial import ConvexHull
 import trimesh
 from trimesh.visual.material import PBRMaterial
 from trimesh.visual.texture import TextureVisuals
@@ -380,6 +381,73 @@ def fit_garment_with_clearance(body, clearance, thickness, style):
     raise ValueError(f"Se rechazó el ajuste. Contactos {report['contacts']}, vértices dentro {report['inside']}.")
 
 
+def _radial_profile(outline, directions):
+    center = (outline.min(axis=0) + outline.max(axis=0)) / 2
+    first = outline[:-1] - center
+    edges = np.diff(outline, axis=0)
+    denominator = directions[:, :1] * edges[:, 1] - directions[:, 1:] * edges[:, 0]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        distance = (first[:, 0] * edges[:, 1] - first[:, 1] * edges[:, 0]) / denominator
+        fraction = (first[:, 0] * directions[:, 1:] - first[:, 1] * directions[:, :1]) / denominator
+    distance[(fraction < 0) | (fraction > 1) | ~np.isfinite(distance)] = -np.inf
+    radius = distance.max(axis=1)
+    if not np.isfinite(radius).all() or np.any(radius <= 0):
+        raise ValueError("El contorno no admite un ajuste radial continuo.")
+    return center, np.maximum(radius, .25 * np.roll(radius, 1) + .50 * radius + .25 * np.roll(radius, -1))
+
+
+def fit_footwear(body, clearance=.007, thickness=.006, color="#353044"):
+    """Fit independent boot shells with a floor and an open ankle collar."""
+    if not body.is_watertight or not .003 <= clearance <= .03 or not .002 <= thickness <= .03:
+        raise ValueError("El calzado requiere cuerpo cerrado, holgura 0,003–0,03 y espesor 0,002–0,03.")
+    low, high = body.bounds
+    height = high[1] - low[1]
+    ankle_height = low[1] + .077 * height
+    mid_x = (low[0] + high[0]) / 2
+    theta = np.linspace(0, 2 * np.pi, 72, endpoint=False)
+    directions = np.column_stack((np.cos(theta), np.sin(theta)))
+    ring = np.arange(len(theta))
+    next_ring = np.roll(ring, -1)
+    n = len(ring)
+    shoes = {}
+    for side, sign in (("izquierdo", 1), ("derecho", -1)):
+        low_points = np.asarray(body.vertices)
+        selected = ((low_points[:, 0] - mid_x) * sign > 0) & (low_points[:, 1] < ankle_height + .018 * height)
+        footprint = low_points[selected][:, [0, 2]]
+        if len(footprint) < 4:
+            raise ValueError(f"No se pudo medir el pie {side}.")
+        hull = footprint[ConvexHull(footprint).vertices]
+        center, radii = _radial_profile(np.vstack((hull, hull[0])), directions)
+        geometry = []
+        for level, margin in (
+            (low[1] - (clearance + thickness) * height, clearance + thickness),
+            (ankle_height, clearance + thickness),
+            (ankle_height, clearance),
+            (low[1] - clearance * height, clearance),
+        ):
+            xz = center + directions * (radii + margin * height)[:, None]
+            geometry.append(np.column_stack((xz[:, 0], np.full(n, level), xz[:, 1])))
+        walls = np.vstack([np.column_stack((ring + step * n, next_ring + step * n,
+                                             next_ring + (step + 1) * n, ring + (step + 1) * n))
+                           for step in range(3)])
+        caps = np.vstack((
+            np.column_stack((ring, next_ring, np.full(n, 4 * n))),
+            np.column_stack((next_ring + 3 * n, ring + 3 * n, np.full(n, 4 * n + 1))),
+        ))
+        floor_centers = [[center[0], geometry[0][0, 1], center[1]], [center[0], geometry[3][0, 1], center[1]]]
+        footwear = trimesh.Trimesh(
+            vertices=np.vstack((*geometry, floor_centers)),
+            faces=np.vstack((walls[:, [0, 1, 2]], walls[:, [0, 2, 3]], caps)), process=False,
+        )
+        footwear.fix_normals()
+        report = body_contacts(body, footwear)
+        if not footwear.is_volume or report != {"contacts": 0, "inside": 0}:
+            raise ValueError(f"El calzado {side} produjo un defecto de volumen o contacto. {report}")
+        footwear.metadata["aethryx_footwear"] = {"clearance": clearance, "thickness": thickness}
+        shoes[f"prenda-zapato-{side}"] = apply_material(footwear, color, projection="cylindrical", roughness=.76)
+    return shoes
+
+
 def _torso_loft(body, clearance, thickness, style="top"):
     """Loft a closed two-layer top from torso sections, with clean planar rims."""
     low, high = body.bounds
@@ -395,7 +463,6 @@ def _torso_loft(body, clearance, thickness, style="top"):
             raise ValueError("El torso no forma un contorno cerrado a la altura de la prenda.")
         loops = [poly[:, [0, 2]] for poly in section.discrete]
         if style != "top" and fraction_y < .51:
-            from scipy.spatial import ConvexHull
             points = np.vstack(loops)
             hull = points[ConvexHull(points).vertices]
             outline = np.vstack((hull, hull[0]))
@@ -403,18 +470,7 @@ def _torso_loft(body, clearance, thickness, style="top"):
             outline = max(loops, key=lambda poly: abs(
                 np.sum(poly[:-1, 0] * poly[1:, 1] - poly[1:, 0] * poly[:-1, 1])
             ))
-        center = (outline.min(axis=0) + outline.max(axis=0)) / 2
-        first = outline[:-1] - center
-        edges = np.diff(outline, axis=0)
-        denominator = directions[:, :1] * edges[:, 1] - directions[:, 1:] * edges[:, 0]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            distance = (first[:, 0] * edges[:, 1] - first[:, 1] * edges[:, 0]) / denominator
-            fraction = (first[:, 0] * directions[:, 1:] - first[:, 1] * directions[:, :1]) / denominator
-        distance[(fraction < 0) | (fraction > 1) | ~np.isfinite(distance)] = -np.inf
-        radius = distance.max(axis=1)
-        if not np.isfinite(radius).all() or np.any(radius <= 0):
-            raise ValueError("El torso no admite un ajuste radial continuo con esta prenda.")
-        radius = np.maximum(radius, .25 * np.roll(radius, 1) + .50 * radius + .25 * np.roll(radius, -1))
+        center, radius = _radial_profile(outline, directions)
         if style != "top":
             radius += height * .065 * np.clip((.52 - fraction_y) / .21, 0, 1)**2
         for rings, expansion in ((inside, clearance), (outside, clearance + thickness)):

@@ -12,11 +12,11 @@ from aethryx_materials import pbr_map_images, transform_uv, update_pbr_maps, uv_
 from aethryx_bridge import inspect_avatar_glb
 from kiria_dialog import apply_scene_plan, plan_scene_command
 from aethryx_modular import (
-    BODY, EYES, ModularAvatar, anime_body, avatar_eye, fit_garment, fitted_eyelids,
+    BODY, EYES, ModularAvatar, anime_body, avatar_eye, body_contacts, fit_footwear, fit_garment, fitted_eyelids,
     mouth_components, regional_hair, visible_body_faces,
 )
 from aethryx_rig import (
-    _GlbBuffers, PosePreview, deform_pose, export_rigged_avatar, facial_morphs,
+    _GlbBuffers, PosePreview, deform_pose, demo_rotations, export_rigged_avatar, facial_morphs,
     humanoid_skeleton, pose_matrices, skin_weights,
 )
 from studio_project import validate_glb
@@ -134,6 +134,36 @@ class GenesisExtendedTests(unittest.TestCase):
         np.testing.assert_array_equal(body.faces, self.body.faces)
         body.metadata["aethryx_hidden_body_bands"].clear()
         self.assertTrue(visible_body_faces(body).all())
+
+    def test_skirt_weights_are_smoother_and_boots_follow_foot_bones_without_contact(self):
+        body = anime_body()
+        dress, _ = fit_garment(body, style="vestido")
+        shoes = fit_footwear(body)
+        self.assertEqual(len(shoes), 2)
+        self.assertTrue(all(mesh.is_volume for mesh in shoes.values()))
+        node = "prenda-vestido"
+        generic = dress.copy()
+        generic.metadata.pop("aethryx_garment")
+        before = PosePreview(trimesh.Scene({BODY: body, node: generic}))
+        improved = PosePreview(trimesh.Scene({BODY: body, node: dress, **shoes}))
+        edges = dress.edges_unique
+        lower_face = np.max(dress.vertices[edges, 1], axis=1) < body.bounds[0, 1] + .49 * body.extents[1]
+        original_lengths = np.linalg.norm(np.diff(dress.vertices[edges[lower_face]], axis=1), axis=2).ravel()
+
+        def strain(sample):
+            current = np.linalg.norm(np.diff(sample[node][edges[lower_face]], axis=1), axis=2).ravel()
+            return np.quantile(np.abs(np.log(current / original_lengths)), .95)
+
+        old_pose, _ = before.evaluate(demo_rotations())
+        current, _ = improved.evaluate(demo_rotations())
+        self.assertLess(strain(current), .30 * strain(old_pose))
+        self.assertEqual(improved.binding["prenda-zapato-izquierdo"], improved.skeleton[0].index("LeftFoot"))
+        moved_body = body.copy()
+        moved_body.vertices = current[BODY]
+        for key, mesh in {node: dress, **shoes}.items():
+            moved = mesh.copy()
+            moved.vertices = current[key]
+            self.assertEqual(body_contacts(moved_body, moved), {"contacts": 0, "inside": 0})
 
     def test_glb_contains_bind_weights_animation_and_local_morph_deltas(self):
         body = self.body

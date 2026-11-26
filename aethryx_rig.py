@@ -81,6 +81,44 @@ def skin_weights(vertices, skeleton, influences=4):
     return joints, result
 
 
+def _clothing_binding(mesh, vertices, body, skeleton, nearest, joints, weights, influences):
+    """Blend the lower skirt continuously across pelvis and thighs."""
+    garment = mesh.metadata.get("aethryx_garment")
+    style = garment.get("style") if isinstance(garment, dict) else None
+    if style not in ("falda", "vestido"):
+        return joints[nearest], weights[nearest]
+    lower, upper = body.bounds
+    height = upper[1] - lower[1]
+    y = (vertices[:, 1] - lower[1]) / height
+    x = (vertices[:, 0] - (lower[0] + upper[0]) / 2) / max(mesh.extents[0] / 2, 1e-6)
+    mix = np.clip((.54 - y) / .08, 0, 1)
+    mix = mix**2 * (3 - 2 * mix)
+    left = .5 + .5 * np.tanh(1.5 * x)
+    names = skeleton[0]
+    slots = [names.index(name) for name in ("Hips", "LeftUpperLeg", "RightUpperLeg")]
+    dense = np.zeros((len(vertices), len(names)), dtype=np.float64)
+    np.add.at(dense, (np.arange(len(vertices))[:, None], joints[nearest]), weights[nearest] * (1 - mix[:, None]))
+    dense[:, slots] += mix[:, None] * np.column_stack((np.full(len(vertices), .55), .45 * left, .45 * (1 - left)))
+    ranked = np.argsort(-dense, axis=1, kind="stable")[:, :influences]
+    result = np.take_along_axis(dense, ranked, axis=1)
+    result /= result.sum(axis=1, keepdims=True)
+    out_j = np.zeros((len(vertices), 4), np.uint16)
+    out_w = np.zeros((len(vertices), 4), np.float32)
+    out_j[:, :influences], out_w[:, :influences] = ranked, result
+    return out_j, out_w
+
+
+def _rig_attachment(name, mesh):
+    if name in EYES:
+        return "LeftEye" if name == EYES[0] else "RightEye"
+    footwear = {"prenda-zapato-izquierdo": "LeftFoot", "prenda-zapato-derecho": "RightFoot"}
+    if name in footwear and mesh.metadata.get("aethryx_footwear"):
+        return footwear[name]
+    if name.startswith(("cabello", "boca-", "dientes-", "lengua", *EYES)):
+        return "Head"
+    return None
+
+
 def demo_rotations():
     return {"LeftUpperArm": (0, 0, 24), "LeftLowerArm": (0, 22, 20),
             "RightUpperArm": (0, 0, -22), "RightLowerArm": (0, -18, -16),
@@ -252,11 +290,7 @@ def export_rigged_avatar(scene, path, influences=4):
         mesh_data = data["meshes"][node["mesh"]]
         name = node["name"]
         node["skin"] = 0
-        rigid = None
-        if name in EYES:
-            rigid = "LeftEye" if name == EYES[0] else "RightEye"
-        elif name.startswith(("cabello", "boca-", "dientes-", "lengua", *EYES)):
-            rigid = "Head"
+        rigid = _rig_attachment(name, parts[name])
         for primitive in mesh_data["primitives"]:
             attributes = primitive["attributes"]
             vertices = glb.positions(attributes["POSITION"])
@@ -266,7 +300,9 @@ def export_rigged_avatar(scene, path, influences=4):
                 joints[:, 0], weights[:, 0] = name_to_index[rigid], 1.
             else:
                 nearest = tree.query(vertices)[1]
-                joints, weights = body_joints[nearest], body_weights[nearest]
+                joints, weights = _clothing_binding(
+                    parts[name], vertices, body, skeleton, nearest, body_joints, body_weights, influences,
+                )
             attributes["JOINTS_0"] = glb.accessor(joints, "VEC4", 5123)
             attributes["WEIGHTS_0"] = glb.accessor(weights, "VEC4")
             shapes = facial if name == BODY else _eyelid_morphs(name, parts)
@@ -314,13 +350,14 @@ class PosePreview:
                 except (ValueError, ImportError, RuntimeError, TypeError, AttributeError):
                     pass
             self.parts[name] = mesh
-            if name in EYES:
-                self.binding[name] = names.index("LeftEye" if name == EYES[0] else "RightEye")
-            elif name.startswith(("cabello", "boca-", "dientes-", "lengua", *EYES)):
-                self.binding[name] = names.index("Head")
+            attached = _rig_attachment(name, originals[name])
+            if attached:
+                self.binding[name] = names.index(attached)
             else:
                 nearest = tree.query(mesh.vertices)[1]
-                self.binding[name] = (joints[nearest], weights[nearest])
+                self.binding[name] = _clothing_binding(
+                    originals[name], mesh.vertices, body, self.skeleton, nearest, joints, weights, influences,
+                )
         self.morphs = facial_morphs(self.parts[BODY])
         self.eyelid_morphs = {name: shapes for name in self.parts
                              if (shapes := _eyelid_morphs(name, self.parts))}

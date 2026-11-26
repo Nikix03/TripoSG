@@ -18,7 +18,7 @@ from aethryx_rig import export_rigged_avatar, preview_expression, preview_pose
 from pose_dialog import PoseDialog
 from aethryx_modular import (
     BODY, BODY_PREVIEW_BANDS, EYES, FACE_CONTROLS, ModularAvatar, anime_body, apply_material, avatar_eye,
-    body_contacts, facial_vertices, fit_garment_with_clearance, fit_hair, fitted_eyelids, head_frame,
+    body_contacts, facial_vertices, fit_footwear, fit_garment_with_clearance, fit_hair, fitted_eyelids, head_frame,
     mouth_components, recolor_iris, regional_hair, write_new_glb,
 )
 
@@ -47,7 +47,7 @@ class ComponentDialog(tk.Toplevel):
             (("Crear cuerpo anime", self.create_body), ("Rostro…", self.face), ("Crear ojos", self.eyes),
              ("Cabello…", self.hair), ("Prenda superior…", self.clothing)),
             (("Color / iris…", self.material), ("UV y textura…", self.texture), ("Comprobar ajuste", self.contacts),
-             ("Degradado por pieza…", self.gradient)),
+             ("Degradado por pieza…", self.gradient), ("Calzado…", self.footwear)),
             (("Perfil anime…", self.create_profile), ("Párpados", self.eyelids), ("Interior bucal", self.mouth),
              ("Cabello por regiones…", self.hair_regions), ("Ocultar región corporal…", self.toggle_body_band)),
             (("Mapas PBR…", self.pbr), ("Diagnóstico UV…", self.diagnose_uv), ("Ajustar UV…", self.edit_uv),
@@ -310,6 +310,17 @@ class ComponentDialog(tk.Toplevel):
             return f"Prenda cerrada con holgura {clearance:.4f}, cero contactos y cero vértices dentro del cuerpo."
         node = "prenda-superior" if style == "top" else f"prenda-{style}"
         self._edit_background(generate, node)
+
+    def footwear(self):
+        values = self._numbers(
+            "Calzado", "Holgura 0,003–0,03 y espesor 0,002–0,03 de la altura.", "0.007 0.006", 2,
+        )
+        if values is not None:
+            def generate():
+                shoes = fit_footwear(self._body(), *values)
+                self._group(shoes)
+                return "Calzado independiente validado con cero contactos y cero vértices dentro del cuerpo."
+            self._edit_background(generate, "prenda-zapato-izquierdo")
 
     def toggle_body_band(self):
         chosen = simpledialog.askstring("Región corporal en el visor", "Escribe torso o cadera para alternar visibilidad.",

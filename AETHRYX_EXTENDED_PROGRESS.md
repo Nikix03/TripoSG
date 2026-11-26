@@ -34,7 +34,13 @@
 | 16 · Studio Pre-Alpha | Avance parcial. Recuperación lateral `.recovery.aeth` cada 45 s cuando cambia un proyecto guardado y al cerrar. Se ofrece al reabrir si es más reciente y se conserva el original. Lanzador con diagnóstico local y exportación de rig en segundo plano. | Instalación limpia, recuperación de escenas sin guardar, cancelación de trabajos nuevos y prueba Unity/VRChat. |
 
 - La prueba integrada con Tk abrió un personaje con vestido, confirmó un comando KIRIA, guardó una recuperación, abrió la pose T aproximada y auditó un GLB de 53 articulaciones, 37.124 caras y 15 visemas. El fotograma leído del GLB desplazó un vértice corporal hasta 0,2147 unidades de escena. El diagnóstico del lanzador detectó Python 3.10.11, la RTX 5070 de 12.227 MiB y las dependencias esenciales. No se instaló software nuevo.
-- Pasaron 66 pruebas mediante `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
+- Segundo bloque publicado y validado en `9c8cac9`. Pasaron 66 pruebas mediante `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
+
+## Ajuste de prendas y calzado
+
+- La falda y el vestido combinan los pesos de pelvis y ambos muslos de forma continua en el bajo. En la pose de control, el percentil 95 del cambio logarítmico absoluto de longitud de las aristas bajas pasó de 0,1286 a 0,0150. El vestido mantuvo cero contactos con el cuerpo y cero vértices en su interior.
+- El calzado se reconstruyó como dos piezas con suela, cavidad interna y abertura superior, ajustadas a la envolvente de cada pie. Cada pieza tiene 576 caras. Se probaron los tres perfiles en reposo y la pose del perfil neutro, sin contactos ni vértices de calzado en el cuerpo. En el rig cada pieza sigue su hueso de pie correspondiente. [Revisión del vestido y el calzado en pose](test_assets/anime/genesis-extended/wardrobe-fit-review.png).
+- El conjunto exportado y auditado contiene 45.308 caras, 14 nodos con skin y 53 articulaciones. Pasaron 67 pruebas. Los zapatos conservan un acabado de prototipo y siguen pendientes los guantes y las mangas.
 
 ### Uso reproducible
 
@@ -45,4 +51,4 @@
 
 ## Continuidad
 
-- Siguiente tarea concreta. Ajustar la transferencia de pesos en prendas acampanadas y validar la geometría de mangas y calzado con cortes seccionales, conservando el cuerpo completo. La licencia activa de Unity es una dependencia separada para el puente y el SDK.
+- Siguiente tarea concreta. Conectar un proveedor Ollama opcional con confirmación de comandos estructurados. El ajuste de mangas y guantes requiere una construcción distinta del casquete por normales. La licencia activa de Unity es una dependencia separada para el puente y el SDK.
