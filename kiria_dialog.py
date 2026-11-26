@@ -9,6 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 import tkinter as tk
 
 from aethryx_modular import ModularAvatar, apply_material, write_new_glb
+from aethryx_ollama import OllamaProvider
 from aethryx_tools import execute_tool, tool_catalog
 
 
@@ -61,11 +62,14 @@ class KiriaDialog(tk.Toplevel):
         self.result = None
         self.plan = None
         self.busy = False
+        self.provider = OllamaProvider()
+        self.history = []
         self.protocol("WM_DELETE_WINDOW", self.close)
         names = [tool["name"] for tool in tool_catalog() if tool["available"]]
         self.tool = tk.StringVar(value="analyze_project_diagnostics")
         self.action = tk.StringVar(value="ocultar")
         self.color = tk.StringVar(value="#FF268F")
+        self.model = tk.StringVar()
         info = ttk.Label(self, text=f"Selección · {', '.join(self.selection) or 'sin objetos'}", padding=8)
         info.pack(anchor="w", fill="x")
         bar = ttk.Frame(self, padding=8)
@@ -82,6 +86,18 @@ class KiriaDialog(tk.Toplevel):
         self.apply_button = ttk.Button(edits, text="Aplicar cambio preparado", command=self.apply)
         self.apply_button.pack(side="left", padx=6)
         self.apply_button.state(["disabled"])
+        provider = ttk.Frame(self, padding=8)
+        provider.pack(fill="x")
+        ttk.Button(provider, text="Buscar modelos Ollama locales", command=self.discover_models).pack(side="left")
+        self.models = ttk.Combobox(provider, textvariable=self.model, state="readonly", width=27)
+        self.models.pack(side="left", padx=6)
+        chat = ttk.Frame(self, padding=8)
+        chat.pack(fill="x")
+        self.prompt = tk.StringVar()
+        entry = ttk.Entry(chat, textvariable=self.prompt)
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        entry.bind("<Return>", self.send_chat)
+        ttk.Button(chat, text="Enviar a Ollama local", command=self.send_chat).pack(side="right")
         log = ttk.Frame(self, padding=8)
         log.pack(fill="both", expand=True)
         self.output = tk.Text(log, wrap="word", bg="#11141b", fg="#eef1f7", state="disabled")
@@ -104,31 +120,80 @@ class KiriaDialog(tk.Toplevel):
         if self.busy:
             return
         selected = self.tool.get()
+        self._log("Diagnóstico solicitado", selected)
+        self._submit(
+            lambda: execute_tool(selected, {"model_path": self.context.get("model") or ""}, self.context),
+            lambda data: self._log("Resultado local", json.dumps(
+                data, indent=2, ensure_ascii=False, default=lambda value: value.tolist(),
+            )[:64000]),
+        )
+
+    def _submit(self, operation, completed):
         self.busy = True
         self.read_button.state(["disabled"])
-        self._log("Diagnóstico solicitado", selected)
         result = Queue()
 
         def run():
             try:
-                data = execute_tool(selected, {"model_path": self.context.get("model") or ""}, self.context)
-                result.put(data)
+                result.put((True, operation()))
             except Exception as exc:
-                result.put({"status": "error", "reason": str(exc)})
+                result.put((False, str(exc)))
 
         def poll():
             try:
-                data = result.get_nowait()
+                ok, data = result.get_nowait()
             except Empty:
                 self.after(60, poll)
                 return
             self.busy = False
             self.read_button.state(["!disabled"])
-            self._log("Resultado local", json.dumps(data, indent=2, ensure_ascii=False,
-                                                    default=lambda value: value.tolist()))
+            if ok:
+                completed(data)
+            else:
+                self._log("Operación no disponible", data)
 
         Thread(target=run, daemon=True).start()
         self.after(60, poll)
+
+    def discover_models(self):
+        if self.busy:
+            return
+        self.model.set("")
+        self.models.configure(values=())
+
+        def show(names):
+            self.models.configure(values=names)
+            if names:
+                self.model.set(names[0])
+            self._log("Ollama local", "\n".join(names) if names else "No hay modelos GGUF locales instalados.")
+
+        self._submit(self.provider.list_models, show)
+
+    def send_chat(self, _event=None):
+        if self.busy:
+            return
+        model, prompt = self.model.get(), self.prompt.get().strip()
+        if not model or not prompt:
+            self._log("Ollama local", "Selecciona un modelo local y escribe una consulta.")
+            return
+        self.prompt.set("")
+        self.plan = None
+        self.apply_button.state(["disabled"])
+        self._log("Consulta a Ollama local", prompt)
+        previous = tuple(self.history)
+
+        def receive(response):
+            if response.text:
+                self._log(f"Respuesta de {model}", response.text)
+                self.history.extend(({"role": "user", "content": prompt},
+                                     {"role": "assistant", "content": response.text}))
+                del self.history[:-10]
+            if response.proposed_action:
+                self.action.set(response.proposed_action)
+                self.color.set(response.proposed_color)
+                self.prepare()
+
+        self._submit(lambda: self.provider.chat(model, prompt, self.selection, previous), receive)
 
     def prepare(self):
         self.plan = None
@@ -146,7 +211,8 @@ class KiriaDialog(tk.Toplevel):
         if self.busy or self.plan is None:
             return
         if not messagebox.askyesno(
-                "Confirmar cambio", f"¿Aplicar {self.plan.action} a {', '.join(self.plan.nodes)}?", parent=self):
+                "Confirmar cambio", f"¿Aplicar {self.plan.action} {self.plan.color or ''} a {', '.join(self.plan.nodes)}?",
+                parent=self):
             return
         try:
             avatar = apply_scene_plan(self.plan, self.scene, self.hidden)

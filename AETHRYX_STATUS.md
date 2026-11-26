@@ -1,5 +1,9 @@
 # Estado de AETHRYX Studio
 
+## Genesis Quality · Recuperación
+
+- Se conservaron y validaron los cambios locales del conector Ollama. KIRIA permite buscar modelos locales, conversar cuando hay un servicio activo y revisar un cambio estructurado antes de aplicarlo. La prueba controlada pasó junto con las 67 pruebas anteriores. En este entorno, el servicio local rechazó la conexión.
+
 ## 26 de noviembre de 2026 · Genesis Extended
 
 - Primer bloque de las fases 9–14. El administrador ofrece anatomía adicional, mapas PBR, conjuntos de ropa, exportación GLB articulada y un diagnóstico local de exportación. La revisión visual usa la plantilla CC0. [Cuatro vistas de prueba](test_assets/anime/genesis-extended/phase9-review.png)

@@ -51,4 +51,5 @@
 
 ## Continuidad
 
-- Siguiente tarea concreta. Conectar un proveedor Ollama opcional con confirmación de comandos estructurados. El ajuste de mangas y guantes requiere una construcción distinta del casquete por normales. La licencia activa de Unity es una dependencia separada para el puente y el SDK.
+- Recuperación desde `8c003b3`. Se completó el proveedor Ollama opcional y su conexión al panel de KIRIA. El cliente usa loopback, descubre modelos GGUF y valida propuestas antes de la confirmación. Pasaron 68 pruebas. La prueba de conexión local devolvió conexión rechazada, por lo que no hubo inferencia de un modelo en este entorno. [API de conversación de Ollama](https://docs.ollama.com/api/chat)
+- Siguiente tarea concreta. Construir una cabeza anime con topología propia y reintentar la prueba aislada de Unity bajo el usuario activo.

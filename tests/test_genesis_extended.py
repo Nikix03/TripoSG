@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -15,6 +16,7 @@ from aethryx_modular import (
     BODY, EYES, ModularAvatar, anime_body, avatar_eye, body_contacts, fit_footwear, fit_garment, fitted_eyelids,
     mouth_components, regional_hair, visible_body_faces,
 )
+from aethryx_ollama import OllamaProvider, decode_chat
 from aethryx_rig import (
     _GlbBuffers, PosePreview, deform_pose, demo_rotations, export_rigged_avatar, facial_morphs,
     humanoid_skeleton, pose_matrices, skin_weights,
@@ -212,3 +214,24 @@ class GenesisExtendedTests(unittest.TestCase):
             plan_scene_command("python", [BODY], {BODY}, "")
         with self.assertRaises(ValueError):
             plan_scene_command("ocultar", ["missing"], {BODY})
+
+    def test_local_model_tool_response_yields_a_proposal_only(self):
+        provider = OllamaProvider()
+        response = {"done": True, "message": {"content": "", "tool_calls": [{"function": {
+            "name": "proponer_cambio", "arguments": {"action": "color_base", "color": "#00d9ff"},
+        }}]}}
+        models = {"models": [
+            {"name": "local:small", "details": {"format": "gguf"}, "size": 243987},
+            {"name": "external:cloud", "details": {"format": "gguf"}, "size": 243987},
+            {"name": "alias:latest", "details": {"format": "gguf"}, "size": 243987, "remote_host": "example"},
+        ]}
+        with patch.object(provider, "_request", side_effect=[models, response]) as request:
+            result = provider.chat("local:small", "Pinta la pieza de celeste", (BODY,))
+        self.assertEqual((result.proposed_action, result.proposed_color), ("color_base", "#00d9ff"))
+        _, payload = request.call_args.args
+        self.assertEqual(payload["keep_alive"], 0)
+        self.assertFalse(payload["stream"])
+        self.assertEqual(len(payload["tools"]), 1)
+        response["message"]["tool_calls"][0]["function"]["arguments"]["path"] = "outside.glb"
+        with self.assertRaises(ValueError):
+            decode_chat(response)
