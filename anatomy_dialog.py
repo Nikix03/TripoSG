@@ -1,0 +1,594 @@
+"""Visual calibration and landmark editor for Genesis."""
+
+from copy import deepcopy
+import json
+from pathlib import Path
+from queue import Empty, Queue
+from threading import Thread
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog, ttk
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageTk
+
+from aethryx_anatomy import (
+    VIEWS, export_studio_reconstruction, load_body_template, orthographic_projection,
+    reconstruct_data,
+)
+from aethryx_engines import suggest_anatomical_points
+
+
+VIEW_LABELS = dict(zip(VIEWS, ("Frontal", "Lateral", "Posterior")))
+POSE_LABELS = {
+    "Nariz": 0, "Oreja izquierda": 7, "Oreja derecha": 8,
+    "Hombro izquierdo": 11, "Hombro derecho": 12,
+    "Codo izquierdo": 13, "Codo derecho": 14,
+    "Muñeca izquierda": 15, "Muñeca derecha": 16,
+    "Cadera izquierda": 23, "Cadera derecha": 24,
+    "Rodilla izquierda": 25, "Rodilla derecha": 26,
+    "Tobillo izquierdo": 27, "Tobillo derecho": 28,
+}
+IMAGE_FILES = [("Imagen", "*.png *.jpg *.jpeg *.webp *.bmp")]
+
+
+class AnatomyDialog(tk.Toplevel):
+    def __init__(self, master):
+        super().__init__(master)
+        self.title("AETHRYX · Reconstrucción anatómica")
+        self.geometry("1160x790")
+        self.minsize(880, 660)
+        self.transient(master)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.result = None
+        self.template_path = None
+        self.template = None
+        self.indices = []
+        self.pose_links = {}
+        self.views = {name: {"points": {}} for name in VIEWS}
+        self.palette = {}
+        self.images = {}
+        self.next_calibration = None
+        self.busy = False
+        self.photo = {}
+        self.image_frame = None
+        self.template_pixels = None
+        self.side = tk.BooleanVar(value=False)
+        self.overlay = tk.BooleanVar(value=True)
+        self.view_label = tk.StringVar(value=VIEW_LABELS["front"])
+        self.pose_label = tk.StringVar()
+        self.status = tk.StringVar(value="Carga una plantilla corporal y las tres imágenes.")
+        self.factors = {name: tk.StringVar(value="1.00") for name in ("head", "shoulders", "legs")}
+        self._build()
+
+    @property
+    def view(self):
+        return VIEWS[list(VIEW_LABELS.values()).index(self.view_label.get())]
+
+    def _build(self):
+        toolbar = ttk.Frame(self, padding=8)
+        toolbar.pack(fill="x")
+        for label, command in (
+            ("Plantilla corporal…", self._load_template),
+            ("Abrir ajuste…", self._open_setup),
+            ("Guardar ajuste…", self._save_setup),
+            ("Cargar imagen…", self._load_image),
+            ("Máscara RGB…", self._load_mask),
+            ("Paleta…", self._edit_palette),
+        ):
+            ttk.Button(toolbar, text=label, command=command).pack(side="left", padx=3)
+        ttk.Label(toolbar, textvariable=self.status, wraplength=360).pack(side="left", padx=10)
+        views = ttk.Frame(self, padding=(8, 0, 8, 6))
+        views.pack(fill="x")
+        choose = ttk.Combobox(views, textvariable=self.view_label, values=list(VIEW_LABELS.values()),
+                              state="readonly", width=11)
+        choose.pack(side="left")
+        choose.bind("<<ComboboxSelected>>", self._change_view)
+        ttk.Button(views, text="Marcar suelo y coronilla", command=self._start_calibration).pack(side="left", padx=6)
+        self.profile_toggle = ttk.Checkbutton(views, text="Perfil opuesto", variable=self.side,
+                                              command=self._reverse_side)
+        self.profile_toggle.pack(side="left")
+        self.profile_toggle.state(["disabled"])
+        ttk.Checkbutton(views, text="Proyectar vértices", variable=self.overlay,
+                        command=self._redraw).pack(side="left")
+        ttk.Button(views, text="Sugerir puntos (MediaPipe)", command=self._suggest).pack(side="left", padx=6)
+
+        panels = ttk.Panedwindow(self, orient="horizontal")
+        panels.pack(fill="both", expand=True, padx=8)
+        for name, title, click in (
+            ("image", "Referencia · clic para colocar o corregir el punto", self._image_click),
+            ("template", "Plantilla · clic para elegir un vértice", self._template_click),
+        ):
+            panel = ttk.Labelframe(panels, text=title)
+            canvas = tk.Canvas(panel, bg="#11141b", highlightthickness=0, width=420, height=300)
+            canvas.pack(fill="both", expand=True)
+            canvas.bind("<Button-1>", click)
+            canvas.bind("<Configure>", self._redraw)
+            panels.add(panel, weight=1)
+            setattr(self, f"{name}_canvas", canvas)
+
+        controls = ttk.Frame(self, padding=8)
+        controls.pack(fill="x")
+        self.points = tk.Listbox(controls, height=5, width=36, exportselection=False)
+        self.points.pack(side="left")
+        self.points.bind("<<ListboxSelect>>", self._point_selected)
+        point_actions = ttk.Frame(controls)
+        point_actions.pack(side="left", padx=8)
+        ttk.Button(point_actions, text="Marcar oculto en esta vista", command=self._clear_point).pack(fill="x")
+        ttk.Button(point_actions, text="Eliminar vértice del ajuste", command=self._remove_point).pack(fill="x")
+        self.pose_combo = ttk.Combobox(point_actions, textvariable=self.pose_label,
+                                       values=["", *POSE_LABELS], state="readonly")
+        self.pose_combo.pack(fill="x", pady=(4, 0))
+        self.pose_combo.bind("<<ComboboxSelected>>", self._link_pose)
+        ttk.Label(point_actions, text="Correspondencia para sugerencias").pack()
+        proportion_box = ttk.Labelframe(controls, text="Proporciones  ·  0,75 a 1,35", padding=5)
+        proportion_box.pack(side="left", padx=8)
+        for row, (key, label) in enumerate(zip(self.factors, ("Ancho de cabeza", "Ancho de hombros", "Largo de piernas"))):
+            ttk.Label(proportion_box, text=label).grid(row=row, column=0, sticky="w")
+            ttk.Spinbox(proportion_box, from_=0.75, to=1.35, increment=0.05,
+                        textvariable=self.factors[key], width=6).grid(row=row, column=1, padx=5)
+        ttk.Button(controls, text="Reconstruir y validar…", command=self._fit).pack(side="right")
+
+    def _close(self):
+        if not self.busy:
+            self.destroy()
+
+    def _load_template(self):
+        if self.busy:
+            return
+        path = filedialog.askopenfilename(parent=self, filetypes=[("Malla corporal", "*.ply *.obj *.glb")])
+        if not path:
+            return
+        try:
+            mesh = load_body_template(path)
+            if mesh.extents[1] <= 0:
+                raise ValueError("La plantilla requiere altura en el eje Y.")
+        except Exception as exc:
+            self._error(exc)
+            return
+        if self.indices and not messagebox.askyesno(
+                "Cambiar plantilla", "¿Reiniciar los vértices y la calibración?", parent=self):
+            return
+        self.template_path, self.template = path, mesh
+        self.indices.clear()
+        self.pose_links.clear()
+        for view in self.views.values():
+            view["points"].clear()
+            view.pop("projection", None)
+            view.pop("calibration", None)
+        self._change_view()
+
+    def _load_image(self):
+        if self.busy:
+            return
+        path = filedialog.askopenfilename(parent=self, filetypes=IMAGE_FILES)
+        if not path:
+            return
+        if self.views[self.view]["points"] and not messagebox.askyesno(
+                "Cambiar referencia", "¿Reiniciar los puntos de esta vista?", parent=self):
+            return
+        try:
+            with Image.open(path) as image:
+                preview = image.convert("RGBA")
+        except OSError as exc:
+            self._error(exc)
+            return
+        self.images[self.view] = preview
+        self.views[self.view] = {"image": path, "points": {}}
+        self._change_view()
+
+    def _load_mask(self):
+        if self.busy or self.view not in self.images:
+            return
+        path = filedialog.askopenfilename(parent=self, filetypes=[("Máscara RGB", "*.png")])
+        if path:
+            try:
+                with Image.open(path) as mask:
+                    if mask.size != self.images[self.view].size:
+                        raise ValueError("La máscara debe tener las dimensiones de la referencia.")
+            except (OSError, ValueError) as exc:
+                self._error(exc)
+                return
+            self.views[self.view]["mask"] = path
+            self.status.set(f"Máscara cargada en {self.view_label.get()}.")
+
+    def _edit_palette(self):
+        if self.busy:
+            return
+        value = simpledialog.askstring("Paleta de máscaras", 'Nombres y colores RGB en JSON. Ejemplo {"ropa":[255,0,0]}',
+                                       initialvalue=json.dumps(self.palette, ensure_ascii=False), parent=self)
+        if value is not None:
+            try:
+                palette = json.loads(value)
+                if not isinstance(palette, dict):
+                    raise ValueError("Usa un objeto JSON para la paleta.")
+                self.palette = palette
+            except ValueError as exc:
+                self._error(exc)
+
+    def _change_view(self, _event=None):
+        self.next_calibration = None
+        view = self.views[self.view]
+        self.profile_toggle.state(["!disabled" if self.view == "side" else "disabled"])
+        if not self.busy:
+            self.status.set(f"{self.view_label.get()} · {'calibrada' if 'projection' in view else 'sin calibrar'}")
+        self._refresh_points(self._selected())
+
+    def _reverse_side(self):
+        view = self.views["side"]
+        if self.busy or self.view != "side":
+            self.side.set(not self.side.get())
+            return
+        if "calibration" in view:
+            self._apply_calibration(*view["calibration"])
+        elif "projection" in view:
+            view.pop("projection")
+            self.status.set("Marca de nuevo suelo y coronilla para el perfil opuesto.")
+        self._redraw()
+
+    def _start_calibration(self):
+        if self.busy or self.template is None or self.view not in self.images:
+            return
+        self.next_calibration = ()
+        self.status.set("Marca el centro del cuerpo en el suelo, a la altura de las plantas.")
+
+    def _apply_calibration(self, center, crown):
+        projection = orthographic_projection(
+            self.view, center, center[1], crown, self.template.bounds,
+            side=-1 if self.side.get() else 1,
+        )
+        view = self.views[self.view]
+        view["calibration"] = [center, crown]
+        view["projection"] = projection.tolist()
+        self.status.set(f"{self.view_label.get()} calibrada. Revisa la alineación y los puntos.")
+
+    def _selected(self):
+        selection = self.points.curselection()
+        return int(selection[0]) if selection else None
+
+    def _refresh_points(self, selected=None):
+        points = self.views[self.view]["points"]
+        self.points.delete(0, "end")
+        for index, vertex in enumerate(self.indices):
+            point = points.get(vertex)
+            if point is None:
+                status = "pendiente"
+            elif point[0] is None:
+                status = "oculto"
+            else:
+                status = "sugerido" if point[1] else "marcado"
+            self.points.insert("end", f"{index + 1:02d}  Vértice {vertex} · {status}")
+        if selected is not None and 0 <= selected < len(self.indices):
+            self.points.selection_set(selected)
+            self.points.see(selected)
+        self._point_selected()
+
+    def _point_selected(self, _event=None):
+        choice = self._selected()
+        pose_id = self.pose_links.get(self.indices[choice]) if choice is not None else None
+        self.pose_label.set(next((name for name, index in POSE_LABELS.items() if index == pose_id), ""))
+        self._redraw()
+
+    def _clear_point(self):
+        selected = self._selected()
+        if selected is not None and not self.busy:
+            self.views[self.view]["points"][self.indices[selected]] = (None, False)
+            self._refresh_points(selected)
+
+    def _remove_point(self):
+        selected = self._selected()
+        if selected is None or self.busy:
+            return
+        vertex = self.indices.pop(selected)
+        self.pose_links.pop(vertex, None)
+        for view in self.views.values():
+            view["points"].pop(vertex, None)
+        self._refresh_points(min(selected, len(self.indices) - 1))
+
+    def _link_pose(self, _event=None):
+        selected = self._selected()
+        if selected is not None and not self.busy:
+            vertex = self.indices[selected]
+            joint = POSE_LABELS.get(self.pose_label.get())
+            if self.pose_links.get(vertex) == joint:
+                return
+            if joint is None:
+                self.pose_links.pop(vertex, None)
+            else:
+                self.pose_links[vertex] = joint
+            for view in self.views.values():
+                if view["points"].get(vertex, (None, False))[1]:
+                    view["points"].pop(vertex)
+            self._refresh_points(selected)
+
+    def _image_click(self, event):
+        if self.image_frame is None or self.busy:
+            return
+        x, y, scale = self.image_frame
+        point = [(event.x - x) / scale, (event.y - y) / scale]
+        width, height = self.images[self.view].size
+        if not (0 <= point[0] < width and 0 <= point[1] < height):
+            return
+        if self.next_calibration is not None:
+            if not self.next_calibration:
+                self.next_calibration = point
+                self.status.set("Marca el punto más alto de la coronilla.")
+                return
+            try:
+                self._apply_calibration(self.next_calibration, point[1])
+            except ValueError as exc:
+                self._error(exc)
+                return
+            self.next_calibration = None
+        elif self._selected() is not None:
+            self.views[self.view]["points"][self.indices[self._selected()]] = (point, False)
+        self._refresh_points(self._selected())
+
+    def _template_click(self, event):
+        if self.template_pixels is None or self.busy:
+            return
+        pixels, depth = self.template_pixels
+        distances = np.linalg.norm(pixels - [event.x, event.y], axis=1)
+        closest = distances.min()
+        if closest > 12:
+            return
+        candidates = np.flatnonzero(distances <= closest + 2)
+        vertex = int(candidates[np.argmax(depth[candidates])])
+        if vertex not in self.indices:
+            self.indices.append(vertex)
+        self._refresh_points(self.indices.index(vertex))
+
+    def _redraw(self, _event=None):
+        if not hasattr(self, "points"):
+            return
+        image_canvas, template_canvas = self.image_canvas, self.template_canvas
+        for canvas in (image_canvas, template_canvas):
+            canvas.delete("all")
+        self.image_frame = self.template_pixels = None
+        view = self.views[self.view]
+        if self.view in self.images:
+            image = self.images[self.view]
+            width, height = image_canvas.winfo_width(), image_canvas.winfo_height()
+            scale = min(width / image.width, height / image.height)
+            x, y = (width - image.width * scale) / 2, (height - image.height * scale) / 2
+            self.image_frame = x, y, scale
+            self.photo["image"] = ImageTk.PhotoImage(image.resize((
+                max(1, round(image.width * scale)), max(1, round(image.height * scale)),
+            ), Image.Resampling.LANCZOS))
+            image_canvas.create_image(x, y, image=self.photo["image"], anchor="nw")
+            if "projection" in view:
+                matrix = np.asarray(view["projection"])
+                bounds = self.template.bounds
+                mid = bounds.mean(axis=0)
+                center = (matrix[0, :3] @ mid + matrix[0, 3]) * scale + x
+                levels = matrix[1, 1] * np.linspace(*bounds[:, 1], 5) + matrix[1, 3]
+                for level in levels:
+                    pos = y + level * scale
+                    image_canvas.create_line(x, pos, width - x, pos, fill="#00d9ff", dash=(4, 4))
+                image_canvas.create_line(center, y, center, height - y, fill="#00d9ff", dash=(4, 4))
+                if self.overlay.get():
+                    self._draw_projected_points(image_canvas, view, matrix, x, y, scale)
+            for order, vertex in enumerate(self.indices):
+                point, suggested = view["points"].get(vertex, (None, False))
+                if point is not None:
+                    px, py = point
+                    self._draw_point(image_canvas, x + px * scale, y + py * scale, order, suggested)
+        if self.template is not None:
+            width, height = template_canvas.winfo_width(), template_canvas.winfo_height()
+            bounds = self.template.bounds
+            axis = 2 if self.view == "side" else 0
+            extent = self.template.extents
+            pixel_height = max(1, min(height - 24, (width - 24) * extent[1] / max(extent[axis], 1e-8)))
+            matrix = orthographic_projection(
+                self.view, [width / 2, 0], (height + pixel_height) / 2,
+                (height - pixel_height) / 2, bounds, side=-1 if self.side.get() else 1,
+            )
+            vertices = np.asarray(self.template.vertices)
+            pixels = vertices @ matrix[:, :3].T + matrix[:, 3]
+            depth = vertices @ -np.cross(*matrix[:, :3])
+            self.template_pixels = pixels, depth
+            picture = Image.new("RGB", (width, height), "#11141b")
+            ImageDraw.Draw(picture).point([tuple(p) for p in pixels], fill="#8a99ab")
+            self.photo["template"] = ImageTk.PhotoImage(picture)
+            template_canvas.create_image(0, 0, image=self.photo["template"], anchor="nw")
+            for order, vertex in enumerate(self.indices):
+                self._draw_point(template_canvas, *pixels[vertex], order)
+
+    def _draw_point(self, canvas, x, y, order, suggested=False):
+        color = "#ff268f" if self._selected() == order else "#ffd767" if suggested else "#00d9ff"
+        canvas.create_oval(x - 4, y - 4, x + 4, y + 4, fill=color, outline="#11141b")
+        canvas.create_text(x + 8, y - 8, text=order + 1, fill=color, anchor="w")
+
+    def _draw_projected_points(self, canvas, view, matrix, x, y, scale):
+        pixels = self.template.vertices[self.indices] @ matrix[:, :3].T + matrix[:, 3]
+        width, height = self.images[self.view].size
+        for vertex, (px, py) in zip(self.indices, pixels):
+            if not (0 <= px < width and 0 <= py < height):
+                continue
+            cx, cy = x + px * scale, y + py * scale
+            canvas.create_rectangle(cx - 3, cy - 3, cx + 3, cy + 3, outline="#f3f5f8")
+            point, _ = view["points"].get(vertex, (None, False))
+            if point is not None:
+                qx, qy = point
+                canvas.create_line(cx, cy, x + qx * scale, y + qy * scale, fill="#a5aeb9", dash=(2, 3))
+
+    def _suggest(self):
+        view = self.view
+        if self.busy or view not in self.images or not self.pose_links:
+            self.status.set("Asocia al menos un vértice de plantilla con una articulación MediaPipe.")
+            return
+        image = self.views[view]["image"]
+        def apply_suggestions(found):
+            points = self.views[view]["points"]
+            additions = {
+                vertex: (found[joint], True) for vertex, joint in self.pose_links.items()
+                if joint in found and vertex not in points
+            }
+            points.update(additions)
+            self._refresh_points(self._selected())
+            self.status.set(f"{len(additions)} sugerencias en {VIEW_LABELS[view]}. Corrige con un clic.")
+        self._work("Detectando puntos con MediaPipe…", lambda: suggest_anatomical_points(image), apply_suggestions)
+
+    def _build_manifest(self, require_ready):
+        if not self.template_path:
+            raise ValueError("Carga una plantilla corporal.")
+        views = {}
+        for name, state in self.views.items():
+            if require_ready and ("image" not in state or "projection" not in state):
+                raise ValueError(f"Carga y calibra la vista {VIEW_LABELS[name].lower()}.")
+            view = {key: deepcopy(value) for key, value in state.items() if key != "points"}
+            view["landmarks"] = [
+                state["points"].get(vertex, (None, False))[0] or [None, None] for vertex in self.indices
+            ]
+            view["suggested"] = [vertex for vertex, (_, proposed) in state["points"].items() if proposed]
+            view["hidden"] = [vertex for vertex, (point, _) in state["points"].items() if point is None]
+            views[name] = view
+        return {
+            "template": self.template_path, "vertex_indices": self.indices.copy(), "views": views,
+            "palette": deepcopy(self.palette), "pose_links": self.pose_links.copy(),
+            "side_opposite": self.side.get(),
+            "proportions": {key: float(var.get().replace(",", ".")) for key, var in self.factors.items()},
+        }
+
+    def _save_setup(self):
+        if self.busy:
+            return
+        try:
+            data = self._build_manifest(False)
+            path = filedialog.asksaveasfilename(parent=self, defaultextension=".json", filetypes=[("Ajuste", "*.json")])
+            if path:
+                Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            self._error(exc)
+
+    def _open_setup(self):
+        if self.busy:
+            return
+        path = filedialog.askopenfilename(parent=self, filetypes=[("Ajuste", "*.json")])
+        if not path:
+            return
+        try:
+            self._restore_setup(Path(path))
+        except Exception as exc:
+            self._error(exc)
+
+    def _restore_setup(self, path):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        template_path = str((path.parent / data["template"]).resolve())
+        template = load_body_template(template_path)
+        indices = data["vertex_indices"]
+        if (template.extents[1] <= 0 or len(indices) != len(set(indices))
+                or any(type(index) is not int or not 0 <= index < len(template.vertices) for index in indices)):
+            raise ValueError("La plantilla o sus índices no son válidos.")
+        views, images = {}, {}
+        for name in VIEWS:
+            view = dict(data["views"][name])
+            landmarks = view.pop("landmarks")
+            if len(landmarks) != len(indices):
+                raise ValueError("El número de puntos no coincide con la plantilla.")
+            for point in landmarks:
+                if point != [None, None] and (not isinstance(point, list) or len(point) != 2
+                        or any(type(value) not in (int, float) or not np.isfinite(value) for value in point)):
+                    raise ValueError("Cada punto debe tener dos coordenadas finitas o estar oculto.")
+            suggested = set(view.pop("suggested", []))
+            hidden = set(view.pop("hidden", []))
+            view["points"] = {
+                vertex: (None, False) if point == [None, None] else (point, vertex in suggested)
+                for vertex, point in zip(indices, landmarks) if point != [None, None] or vertex in hidden
+            }
+            for asset in ("image", "mask"):
+                if asset in view:
+                    view[asset] = str((path.parent / view[asset]).resolve())
+            if "image" in view:
+                with Image.open(view["image"]) as image:
+                    images[name] = image.convert("RGBA")
+            if "projection" in view:
+                projection = np.asarray(view["projection"], dtype=float)
+                if projection.shape != (2, 4) or not np.isfinite(projection).all():
+                    raise ValueError("La proyección contiene valores inválidos.")
+            if "calibration" in view:
+                center, crown = view["calibration"]
+                orthographic_projection(name, center, center[1], crown, template.bounds)
+            views[name] = view
+        pose_links = {int(vertex): joint for vertex, joint in data.get("pose_links", {}).items()}
+        self.template_path, self.template = template_path, template
+        self.indices, self.views, self.images = indices, views, images
+        self.palette = data.get("palette", {})
+        self.pose_links = {vertex: joint for vertex, joint in pose_links.items() if vertex in indices}
+        self.side.set(data.get("side_opposite", views["side"].get("projection", [[0, 0, -1]])[0][2] > 0))
+        for key, var in self.factors.items():
+            var.set(data.get("proportions", {}).get(key, 1))
+        self._change_view()
+
+    def _fit(self):
+        if self.busy:
+            return
+        try:
+            data = self._build_manifest(True)
+            if len(data["vertex_indices"]) < 4:
+                raise ValueError("Marca al menos cuatro vértices en la plantilla y sus puntos homólogos.")
+        except ValueError as exc:
+            self._error(exc)
+            return
+        if any(view["suggested"] for view in data["views"].values()) and not messagebox.askyesno(
+                "Revisar puntos sugeridos", "¿Confirmas que revisaste los puntos amarillos de las tres vistas?",
+                parent=self):
+            return
+        def solve():
+            report = {}
+            mesh, patches, errors = reconstruct_data(data, deformation_report=report)
+            return mesh, patches, report, errors
+        self._work("Ajustando y validando la geometría en CPU…", solve, lambda result: self._review(data, result))
+
+    def _review(self, data, result):
+        mesh, patches, report, errors = result
+        summary = "\n".join(f"{VIEW_LABELS[name]} {error:.2f} px" for name, error in errors.items())
+        closed = "sí" if report["watertight"] else "no"
+        winding = "sí" if report["winding_consistent"] else "no"
+        self.status.set("Validación terminada. Puedes guardar o corregir el ajuste.")
+        if not messagebox.askyesno("Validación del cuerpo", (
+            f'{report["vertices"]:,} vértices / {report["faces"]:,} caras · Cerrado {closed}\n'
+            f"Orientación consistente {winding}\n"
+            f'Autointersecciones detectadas {report["intersection_pairs_up_to_100"]} (máximo 100)\n'
+            f'Caras con área extrema {report["extreme_area_faces"]}\n'
+            f'Normales con giro mayor de 90° {report["reflected_normal_faces"]}\n'
+            f'Simetría X, percentil 95 {report["symmetry_p95_height"]:.2%} de la altura\n\n'
+            f"Reproyección antes de estilizar\n{summary}\n\n¿Guardar el cuerpo completo?"
+        ), parent=self):
+            return
+        folder = filedialog.askdirectory(parent=self, title="Carpeta de salida Genesis")
+        if folder:
+            self._work("Guardando GLB y validación…",
+                       lambda: export_studio_reconstruction(folder, data, mesh, patches, report, errors),
+                       self._finish)
+
+    def _finish(self, outputs):
+        self.result = outputs
+        self.destroy()
+
+    def _work(self, status, operation, done):
+        self.busy = True
+        self.status.set(status)
+        queue = Queue()
+        def run():
+            try:
+                queue.put((True, operation()))
+            except Exception as exc:
+                queue.put((False, exc))
+        def check():
+            try:
+                ok, result = queue.get_nowait()
+            except Empty:
+                self.after(60, check)
+                return
+            self.busy = False
+            if ok:
+                done(result)
+            else:
+                self._error(result)
+        Thread(target=run, daemon=True).start()
+        self.after(60, check)
+
+    def _error(self, exc):
+        self.status.set(str(exc))
+        messagebox.showerror("Reconstrucción anatómica", str(exc), parent=self)

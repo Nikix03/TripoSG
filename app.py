@@ -23,6 +23,7 @@ from character_sheet import (
     validate_reference_regions,
 )
 from character_sheet_dialog import CharacterSheetDialog
+from anatomy_dialog import AnatomyDialog
 from studio_project import validate_settings, validate_glb, save_project, load_project
 from aethryx_engines import engine_catalog, prepare_character_alpha
 from aethryx_tools import analyze_project_diagnostics, execute_tool, tool_catalog
@@ -261,6 +262,7 @@ class AethryxStudio(tk.Tk):
         image_menu.add_command(label="Generar malla 3D", command=self.generate)
         for label in ("Recortar - proximo", "Quitar fondo - proximo", "Resolucion de salida - proximo"):
             image_menu.add_command(label=label, state="disabled")
+        image_menu.add_command(label="Reconstrucción anatómica multivista…", command=self.reconstruct_anatomy)
         self.main_menu.add_cascade(label="Imagen", menu=image_menu)
 
         scene_menu = tk.Menu(self.main_menu, **menu_colors)
@@ -609,6 +611,19 @@ class AethryxStudio(tk.Tk):
             self.image_path.set(path)
             self._load_reference_preview()
             self.status.set(f"Imagen cargada: {os.path.basename(path)}")
+
+    def reconstruct_anatomy(self):
+        if not self._workspace_available():
+            return
+        dialog = AnatomyDialog(self)
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+        body, patches = dialog.result
+        self.append_log(f"Genesis: cuerpo base guardado en {body}")
+        if patches:
+            self.append_log(f"Genesis: parches de referencia disponibles para importar en {patches}")
+        self.load_model(str(body), edit=True)
 
     def analyze_character_sheet(self):
         if not self._workspace_available():

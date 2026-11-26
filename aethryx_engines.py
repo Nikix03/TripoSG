@@ -319,6 +319,36 @@ def _onnx_segmentation_regions(source, width, height):
         return [], f"Segmentación ONNX no disponible: {exc}"
 
 
+def _detect_pose(mp, mp_image, pose_model):
+    if not Path(pose_model).is_file():
+        raise FileNotFoundError("Modelo pose no encontrado")
+    options = mp.tasks.vision.PoseLandmarkerOptions(
+        base_options=mp.tasks.BaseOptions(model_asset_path=str(pose_model)),
+        running_mode=mp.tasks.vision.RunningMode.IMAGE,
+    )
+    with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
+        return landmarker.detect(mp_image).pose_landmarks
+
+
+def suggest_anatomical_points(source):
+    import mediapipe as mp
+    import numpy as np
+
+    default = Path(__file__).parent / "models" / "mediapipe" / "pose_landmarker_heavy.task"
+    model = os.environ.get("AETHRYX_MEDIAPIPE_POSE_MODEL") or default
+    with Image.open(source) as image:
+        width, height = image.size
+        pixels = np.asarray(image.convert("RGB"))
+    groups = _detect_pose(mp, mp.Image(image_format=mp.ImageFormat.SRGB, data=pixels), model)
+    if not groups:
+        return {}
+    return {
+        index: [float(point.x * width), float(point.y * height)]
+        for index, point in enumerate(groups[0])
+        if (point.visibility or 0) >= 0.6 and 0 <= point.x < 1 and 0 <= point.y < 1
+    }
+
+
 def _mediapipe_reference_regions(source, width, height):
     try:
         import mediapipe as mp
@@ -343,16 +373,7 @@ def _mediapipe_reference_regions(source, width, height):
 
     if pose_model:
         try:
-            if not Path(pose_model).is_file():
-                raise FileNotFoundError("Modelo pose no encontrado")
-            base = mp.tasks.BaseOptions(model_asset_path=pose_model)
-            options = mp.tasks.vision.PoseLandmarkerOptions(
-                base_options=base,
-                running_mode=mp.tasks.vision.RunningMode.IMAGE,
-            )
-            with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
-                result = landmarker.detect(mp_image)
-            pose_landmarks = getattr(result, "pose_landmarks", None)
+            pose_landmarks = _detect_pose(mp, mp_image, pose_model)
             if pose_landmarks:
                 landmarks = pose_landmarks[0]
                 points = []
