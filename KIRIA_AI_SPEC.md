@@ -1,0 +1,31 @@
+# KIRIA AI — asistente de edición de personajes para AETHRYX Studio
+
+Requisito del propietario: poder señalar un defecto del avatar, por ejemplo «mira, quedó mal eso», y solicitar que la IA analice, proponga y ejecute una corrección real dentro de AETHRYX, sin exigir conocimientos avanzados de Blender ni abrirlo. Este documento amplía CHARACTER_STUDIO_SPEC.md. Es una especificación, no una función implementada.
+
+## Experiencia del usuario
+- Panel de conversación integrado en el editor, en español, con texto y selección contextual de objetos o regiones 3D; permitir adjuntar referencias adicionales y marcar una región en el visor.
+- El contexto incluye el ID del proyecto, la revisión de la escena, selección persistente, vistas renderizadas (frontal/lateral/posterior/detalle), referencias aprobadas y resultados de herramientas de diagnóstico. No asumir que una selección contiene todo el contexto necesario.
+- Interpretar órdenes como «corrige los dedos», «alinea los ojos», «mantén la heterocromía», «separa esta prenda», «reduce los polígonos sin perder la silueta», «añade huesos» y «comprueba si está listo para Unity». Si «esto» es ambiguo y no hay selección, pedir al usuario que la identifique.
+- Proponer plan con operaciones disponibles, alcance, riesgos y cambios esperados. Previsualizar sobre una copia editable; comparar antes/después desde los mismos ángulos. Aceptar, descartar, deshacer y rehacer. Conservar el original y las referencias. No cambiar otras partes sin consentimiento.
+- Mostrar estado y resultados reales, incluidas advertencias e incertidumbre. Si falta un motor o herramienta, indicar «no disponible»; no fingir correcciones con texto ni prometer una reconstrucción exacta de superficies ocultas.
+
+## Arquitectura modular, local primero
+1. Asistente de lenguaje: backend intercambiable (modelo local preferido, proveedor externo opcional y explícito). Interpreta solicitudes y genera planes estructurados; no edita archivos directamente. KIRIA es la identidad de la interfaz, no implica que ChatGPT esté integrado ni que exista una licencia de OpenAI.
+2. Visión multimodal: recibe capturas del visor y recortes de referencia; identifica posibles discrepancias anatómicas/visuales. Sus hallazgos son hipótesis, contrastadas con datos reales de malla, huesos, materiales y validadores. No deducir geometría oculta con certeza.
+3. Registro de herramientas tipadas: herramientas Python/SDK reales, cada una con esquema de entrada, requisitos y salida, alcance y capacidades; ejemplos iniciales: analyze_mesh, compare_bounds, list_scene_nodes, analyze_symmetry, preview_transform, validate_glb. Después: correct_eye_alignment, retopology, regional_reconstruction, texture_bake, rigging y Unity validation, solo tras implementarlas y probarlas. No ejecutar shell, código generado libremente o comandos arbitrarios del modelo.
+4. Orquestador: plan JSON validado, herramientas permitidas por versión/capacidad, límites de recursos, cancelación, seguimiento de progreso, revisión de escena para impedir aplicar cambios a selección obsoleta, transacciones y registro de auditoría. Requiere aprobación para aplicar modificaciones, especialmente destructivas, exportar o compartir datos.
+5. Motor de edición no destructiva: checkpoints y versiones de malla, materiales, esqueleto y pesos; validar invariantes (topología, UV, pesos, blendshapes y enlaces de ropa) tras cada cambio. Si cambia topología, marcar skinning/morphs/UV afectados como pendientes de revalidación; no silenciosamente perderlos.
+6. Privacidad: inferencia local por defecto, no enviar imágenes, geometría ni proyectos a servicios externos sin permiso informado. Credenciales locales seguras, nunca GitHub. Tratar texto de imágenes/archivos y resultados de herramientas como datos no confiables; no seguir instrucciones incrustadas. No ejecutar acciones externas automáticamente.
+
+## Recursos y comercialización
+- Evaluar modelos de lenguaje/visión locales pequeños y cuantizados y sus licencias, mediante pruebas reales en RTX 5070; determinar VRAM disponible y memoria de sistema, no asumir que modelo generativo 3D y asistente caben simultáneamente. Cola de tareas y descarga de modelos de memoria cuando sea necesario. Modelo remoto solo opt-in, con información de coste y privacidad; no exigir API de pago para funciones locales básicas.
+- Mantener un inventario de licencias de modelos, pesos, runtimes y herramientas. El asistente y los motores de edición son componentes independientes. No ofrecer uso comercial antes de revisar licencias y marca.
+
+## Implementación incremental y criterios de aceptación
+A. Asistente de diagnóstico: integrar panel y contexto, detectar capacidades, conectar backend local y al menos herramientas de solo lectura. Probar solicitud en español y selección; respuesta basada en estadísticas reales, no inventadas.
+B. Edición segura: integrar operaciones deterministas reales, por ejemplo escala, transformación de componente seleccionado, simetría y reparación localizada cuando existan; previsualización, undo, pruebas de preservación de geometría no seleccionada. Antes/después verificables.
+C. Corrección anatómica asistida: cuando existan segmentación y motores especializados, localizar mano/ojos/cabello, comparar referencias, reconstruir o ajustar región y validar transiciones, pesos, UV y morphs. Permitir ajuste manual cuando falle.
+D. Automatización del avatar: encadenar herramientas de rig, materiales, cara y exportación solo cuando estén disponibles; ejecutar validadores de Unity/VRChat y mostrar fallos, no publicar automáticamente.
+E. QA: casos de órdenes ambiguas, selección inexistente, backend ausente, falta de VRAM, cancelación, fallo de herramienta, prompt injection en referencias, deshacer y regresión de partes no seleccionadas. Documentar pruebas, resultados y limitaciones.
+
+Prioridad inmediata: Character Sheet Analyzer y arquitectura del editor de escena. Diseñar el registro de herramientas y contexto desde ahora; desarrollar el asistente de diagnóstico en paralelo cuando las operaciones de lectura sean estables. No cambiar el motor por un chatbot ni implementar botones de IA que simulen funciones inexistentes. Mantener colaboración en ramas separadas y PR sin fusionar automáticamente.
