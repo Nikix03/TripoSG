@@ -1,4 +1,7 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 import trimesh
@@ -7,9 +10,27 @@ from aethryx_anime import nikix_preset
 from aethryx_materials import unwrap_uv, uv_quality
 from aethryx_modular import BODY, body_contacts, fit_component_to_patch, refine_component_fit
 from aethryx_rig import profile_parts
+from studio_project import generation_recovery_path, load_project, save_project
 
 
 class NikixEvolutionTests(unittest.TestCase):
+    def test_generation_recovery_uses_atomic_project_manifest(self):
+        with TemporaryDirectory() as folder, patch.dict("os.environ", {"LOCALAPPDATA": folder}):
+            root = Path(folder)
+            source = root / "reference.png"
+            source.touch()
+            path = generation_recovery_path()
+            self.assertNotEqual(path, generation_recovery_path())
+            path.parent.mkdir(parents=True)
+            save_project(path, image=source, model=None, output=root / "avatar.glb",
+                         steps=30, faces=16000, seed=42, guidance=7.)
+            attempt = path.with_name(path.name.replace("-started", "-failed"))
+            path.rename(attempt)
+            loaded = load_project(attempt)
+            self.assertEqual(Path(loaded["image"]), source.resolve())
+            self.assertEqual(loaded["settings"]["seed"], 42)
+            self.assertEqual(loaded["settings"]["faces"], 16000)
+
     def test_v4_ribbons_footwear_and_emissive_trim(self):
         parts = nikix_preset(version=4)
         self.assertTrue(all(piece.is_volume for piece in parts.values()))

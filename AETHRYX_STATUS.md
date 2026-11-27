@@ -1,5 +1,12 @@
 # Estado de AETHRYX Studio
 
+## Genesis Ascension · Recuperación de inferencia
+
+- **Archivo → Recuperar generación TripoSG** restaura la referencia original y sus regiones, ruta de salida, pasos, semilla, límite de caras y guidance. Studio registra el intento antes del preprocesamiento y conserva el registro cuando se interrumpe, se cancela o falla. La prueba en Tk verificó que recuperar un intento cancelado conserva el registro y solo restaura parámetros. El nuevo intento comienza desde el principio y no usa un checkpoint latente.
+- Ollama rechazó loopback con WinError 10061. Solo se comprobó la disponibilidad del servicio. El cliente mantiene la descarga de memoria al finalizar mensajes, la confirmación de propuestas y el historial existentes. [API oficial](https://docs.ollama.com/api/chat)
+- Pasaron 85 pruebas, incluida la nueva regresión que comprueba el manifiesto de un intento fallido.
+
+
 ## Genesis Ascension · Visión, ajuste capilar, V5 y perfiles
 
 - Git partió limpio de `df1d4a3`. El editor de máscara visible incorpora pincel, borrador, categorías, deshacer y limpieza de islas, verificados en Tk. La fusión opcional combina el primer plano de ISNet con la crominancia del rostro de See-through para proponer piel expuesta. No deduce anatomía bajo la ropa. En la misma imagen autorizada y los mismos 10.904 píxeles anotados, la exactitud pasó de 56,19 % a 86,90 % y el IoU de ropa de 22,75 % a 58,55 %. Accesorios siguió en 0 %. La muestra es una sola ilustración y se usó para evaluar esta heurística. [Máscara refinada](test_assets/anime/genesis-phase4/reference/vision-v2-mask.png)

@@ -75,6 +75,14 @@ def unsaved_recovery_path():
     return unsaved_recovery_directory() / f"session-{uuid4().hex}.aeth"
 
 
+def generation_recovery_directory():
+    return unsaved_recovery_directory().with_name("Generation")
+
+
+def generation_recovery_path():
+    return generation_recovery_directory() / f"triposg-{uuid4().hex}-started.aeth"
+
+
 def newer_recovery(project):
     try:
         snapshot = recovery_path(project)

@@ -32,6 +32,7 @@ from kiria_dialog import KiriaDialog
 from studio_project import (
     validate_settings, validate_glb, save_project, load_project, newer_recovery, recovery_path,
     unsaved_recovery_directory, unsaved_recovery_path,
+    generation_recovery_directory, generation_recovery_path,
 )
 from aethryx_engines import engine_catalog, prepare_character_alpha
 from aethryx_tools import analyze_project_diagnostics, execute_tool, tool_catalog
@@ -93,6 +94,7 @@ class AethryxStudio(tk.Tk):
         self.anatomy_setup = None
         self.avatar_nodes = build_avatar_scene_graph()
         self.generation_active = False
+        self.generation_recovery = None
         self.model_loading = False
         self.scene_history = []
         self.scene_future = []
@@ -195,6 +197,7 @@ class AethryxStudio(tk.Tk):
         file_menu.add_command(label="Nuevo proyecto (.aeth)", accelerator="Ctrl+N", command=self.new_project)
         file_menu.add_command(label="Abrir proyecto...", accelerator="Ctrl+O", command=self.open_project)
         file_menu.add_command(label="Recuperar sesión sin guardar…", command=self.recover_unsaved_session)
+        file_menu.add_command(label="Recuperar generación TripoSG…", command=self.recover_generation)
         file_menu.add_command(label="Guardar proyecto", accelerator="Ctrl+S", command=self.save_current_project)
         file_menu.add_command(label="Guardar proyecto como...", command=lambda: self.save_current_project(True))
         file_menu.add_separator()
@@ -1727,6 +1730,42 @@ class AethryxStudio(tk.Tk):
         self.log.configure(state="disabled")
         self.log_line_count = 0
 
+    def recover_generation(self):
+        if not self._workspace_available():
+            return
+        path = filedialog.askopenfilename(initialdir=str(generation_recovery_directory()),
+                                          filetypes=[("Generación de Studio", "triposg-*.aeth")])
+        if not path:
+            return
+        try:
+            data = load_project(path)
+            if not data["image"] or not data["output"]:
+                raise ValueError("La recuperación necesita una referencia y un archivo de salida.")
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Recuperar generación", str(exc))
+            return
+        if not messagebox.askyesno("Recuperar generación", "¿Restaurar la referencia y los parámetros de TripoSG?"):
+            return
+        self.image_path.set(data["image"])
+        self.output_path.set(data["output"])
+        for key in ("steps", "faces", "seed", "guidance"):
+            getattr(self, key).set(data["settings"][key])
+        self.reference_regions = data["references"]
+        self._load_reference_preview()
+        self.status.set("Parámetros recuperados. Puedes iniciar un intento nuevo.")
+
+    def _finish_generation_record(self, status):
+        path, self.generation_recovery = self.generation_recovery, None
+        if path is None:
+            return
+        try:
+            if status == "complete":
+                path.unlink(missing_ok=True)
+            else:
+                path.rename(path.with_name(path.stem.removesuffix("-started") + f"-{status}.aeth"))
+        except OSError as exc:
+            self.append_log(f"No se pudo actualizar la recuperación de TripoSG. {exc}")
+
     def generate(self):
         if not self._workspace_available():
             return
@@ -1769,6 +1808,14 @@ class AethryxStudio(tk.Tk):
 
         temporary_image = None
         input_description = image
+        try:
+            record = generation_recovery_path()
+            record.parent.mkdir(parents=True, exist_ok=True)
+            save_project(record, image=image, output=output, model=None, steps=steps, faces=faces,
+                         seed=seed, guidance=guidance, references=self.reference_regions)
+            self.generation_recovery = record
+        except (OSError, ValueError) as exc:
+            self.append_log(f"No se pudo guardar la recuperación de TripoSG. {exc}")
         if primary_region:
             try:
                 crop = crop_reference(primary_region["path"], primary_region["bbox"])
@@ -1790,6 +1837,7 @@ class AethryxStudio(tk.Tk):
                     except OSError as cleanup_error:
                         self.append_log(f"No se pudo eliminar el recorte temporal: {cleanup_error}")
                 messagebox.showerror("No se pudo preparar el recorte", str(exc))
+                self._finish_generation_record("failed")
                 return
             image = temporary_image
         alpha_path = os.path.join(
@@ -1824,6 +1872,7 @@ class AethryxStudio(tk.Tk):
                 except OSError:
                     pass
             self.status.set("Generacion cancelada: canal alfa ISNet no disponible.")
+            self._finish_generation_record("failed")
             return
 
         self.generation_active = True
@@ -1958,6 +2007,7 @@ class AethryxStudio(tk.Tk):
                 self.after(0, deliver_result)
 
     def _generation_finished(self, output):
+        self._finish_generation_record("complete")
         self.generation_active = False
         self.progress.stop()
         self.progress.configure(mode="determinate", value=100)
@@ -1968,6 +2018,7 @@ class AethryxStudio(tk.Tk):
         self.load_model(output)
 
     def _generation_cancelled(self):
+        self._finish_generation_record("cancelled")
         self.generation_active = False
         self.progress.stop()
         self.progress.configure(mode="determinate", value=0)
@@ -1977,6 +2028,7 @@ class AethryxStudio(tk.Tk):
         self.append_log("Generacion cancelada. El archivo temporal se descarto.")
 
     def _generation_failed(self, error):
+        self._finish_generation_record("failed")
         self.generation_active = False
         self.progress.stop()
         self.progress.configure(mode="determinate", value=0)
