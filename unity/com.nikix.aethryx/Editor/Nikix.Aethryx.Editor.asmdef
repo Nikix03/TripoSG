@@ -1,0 +1,5 @@
+{
+  "name": "Nikix.Aethryx.Editor",
+  "rootNamespace": "Nikix.Aethryx",
+  "includePlatforms": ["Editor"]
+}

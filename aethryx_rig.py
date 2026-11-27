@@ -154,9 +154,12 @@ def facial_morphs(mesh):
     def region(cx, cy, dx, dy):
         return np.exp(-((x - cx) / dx)**2 - ((y - cy) / dy)**2) * front
 
-    mouth = region(.5, .02, .27, .14)
-    lower_lip = mouth * np.clip((.043 - y) / .11, 0, 1)
-    corners = region(.5 + .19 * np.sign(x - .5), .02, .10, .10)
+    face_levels = mesh.metadata.get("aethryx_face_levels", {})
+    lips = (face_levels["mouth"] - lower[1]) / height if "mouth" in face_levels else .02
+    eye_level = (face_levels["eye"] - lower[1]) / height if "eye" in face_levels else .37
+    mouth = region(.5, lips, .27, .14)
+    lower_lip = mouth * np.clip((lips + .023 - y) / .11, 0, 1)
+    corners = region(.5 + .19 * np.sign(x - .5), lips, .10, .10)
     result = {}
     for name, dx, dy, dz in (
         ("Smile", np.sign(x - .5) * corners * width * .031, corners * height * .077, 0),
@@ -166,7 +169,7 @@ def facial_morphs(mesh):
     ):
         result[name] = np.column_stack(np.broadcast_arrays(dx, dy, dz)).astype(np.float32)
     for name, center in (("BlinkLeft", .714), ("BlinkRight", .286)):
-        zone = region(center, .39, .13, .11) * np.clip((y - .33) / .11, 0, 1)
+        zone = region(center, eye_level + .02, .13, .11) * np.clip((y - eye_level + .04) / .11, 0, 1)
         result[name] = np.column_stack((zone * 0, -zone * height * .092, zone * depth * .01)).astype(np.float32)
     result["Blink"] = result["BlinkLeft"] + result["BlinkRight"]
     brow = region(.5 + .22 * np.sign(x - .5), .52, .17, .088)
@@ -206,6 +209,13 @@ def _eyelid_morphs(name, parts):
         displacement[:, 2] = globe.extents[2] * .055
         return {f"Blink{side}": displacement, "Blink": displacement.copy()}
     return {}
+
+
+def _accessory_morphs(name, parts, facial, tree):
+    if name == "boca-linea":
+        nearest = tree.query(parts[name].vertices)[1]
+        return {key: offset[nearest] for key, offset in facial.items() if not key.startswith("Blink")}
+    return _eyelid_morphs(name, parts)
 
 
 class _GlbBuffers:
@@ -305,7 +315,7 @@ def export_rigged_avatar(scene, path, influences=4):
                 )
             attributes["JOINTS_0"] = glb.accessor(joints, "VEC4", 5123)
             attributes["WEIGHTS_0"] = glb.accessor(weights, "VEC4")
-            shapes = facial if name == BODY else _eyelid_morphs(name, parts)
+            shapes = facial if name == BODY else _accessory_morphs(name, parts, facial, tree)
             if shapes:
                 mapping = nearest if name == BODY else cKDTree(parts[name].vertices).query(vertices)[1]
                 primitive["targets"] = [
@@ -359,8 +369,9 @@ class PosePreview:
                     originals[name], mesh.vertices, body, self.skeleton, nearest, joints, weights, influences,
                 )
         self.morphs = facial_morphs(self.parts[BODY])
-        self.eyelid_morphs = {name: shapes for name in self.parts
-                             if (shapes := _eyelid_morphs(name, self.parts))}
+        preview_tree = cKDTree(self.parts[BODY].vertices)
+        self.accessory_morphs = {name: shapes for name in self.parts
+                                 if (shapes := _accessory_morphs(name, self.parts, self.morphs, preview_tree))}
 
     def t_pose(self):
         names, _, bind = self.skeleton
@@ -379,8 +390,8 @@ class PosePreview:
             vertices = np.asarray(mesh.vertices)
             if name == BODY and expression:
                 vertices = vertices + self.morphs[expression] * strength
-            elif name in self.eyelid_morphs and expression in self.eyelid_morphs[name]:
-                vertices = vertices + self.eyelid_morphs[name][expression] * strength
+            elif name in self.accessory_morphs and expression in self.accessory_morphs[name]:
+                vertices = vertices + self.accessory_morphs[name][expression] * strength
             binding = self.binding[name]
             if isinstance(binding, tuple):
                 transformed[name] = deform_pose(vertices, *binding, matrices)
@@ -408,13 +419,17 @@ def preview_expression(scene, name, strength=1.0):
         raise ValueError("Crea primero el cuerpo base.")
     body = avatar.get(BODY)
     shapes = facial_morphs(body)
+    world_body = avatar.get(BODY, world=True)
+    world_shapes = facial_morphs(world_body)
+    tree = cKDTree(world_body.vertices)
     if name not in shapes:
         raise ValueError("Expresión desconocida. Disponibles: " + ", ".join(shapes))
     body.vertices += shapes[name] * strength
     avatar.replace(BODY, body)
-    parts = {node: avatar.get(node, world=True) for node in avatar.nodes if node.startswith(EYES)}
+    parts = {node: avatar.get(node, world=True) for node in avatar.nodes
+             if node.startswith(EYES) or node == "boca-linea"}
     for node, mesh in parts.items():
-        changes = _eyelid_morphs(node, parts)
+        changes = _accessory_morphs(node, parts, world_shapes, tree)
         if name in changes:
             mesh.vertices += changes[name] * strength
             mesh.apply_transform(np.linalg.inv(avatar.scene.graph[node][0]))

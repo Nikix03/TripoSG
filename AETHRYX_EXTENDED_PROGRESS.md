@@ -52,4 +52,12 @@
 ## Continuidad
 
 - Recuperación desde `8c003b3`. Se completó el proveedor Ollama opcional y su conexión al panel de KIRIA. El cliente usa loopback, descubre modelos GGUF y valida propuestas antes de la confirmación. Pasaron 68 pruebas. La prueba de conexión local devolvió conexión rechazada, por lo que no hubo inferencia de un modelo en este entorno. [API de conversación de Ollama](https://docs.ollama.com/api/chat)
-- Siguiente tarea concreta. Construir una cabeza anime con topología propia y reintentar la prueba aislada de Unity bajo el usuario activo.
+- El conector recuperado se publicó en `3bc9ae5`.
+
+## Genesis Quality · Topología e importación de Editor
+
+- La cabeza v2 usa anillos nuevos soldados a un corte del cuello. La generación preserva la geometría inferior de la plantilla, con una nueva numeración después del corte. Conserva la opción anterior para los ajustes multivista que dependen de sus índices. Se añadieron ojos más grandes con piezas de párpados, pestañas y cejas, línea bucal con morphs y 18 mechones UV sobre una cubierta. El perfil femenino se comparó desde cuatro vistas. El render toon es de revisión y el GLB conserva sus materiales PBR. [Comparación](test_assets/anime/genesis-quality/comparacion-v2.png)
+- El corte de alto nivel de Trimesh exigía Shapely. Se utilizó su corte de triángulos de bajo nivel y no se instaló nada. Después del render inicial se incorporó la cubierta capilar para cerrar las zonas descubiertas de la nuca.
+- Se confirmó Unity bajo el usuario activo con un proyecto temporal. El paquete embebido de Editor importó dos mallas, 53 huesos, 23 morphs corporales, clip y textura de iris de un GLB v2. Unity informó Humanoid válido y `BakeMesh` midió 0,1628941 unidades al rotar el brazo. En una primera recompilación apareció una referencia en caché a la ruta anterior del código. La prueba posterior del paquete terminó con código 0 y sin ese error. El importador inicial verifica material base Standard. No se instaló SDK ni se ejecutó el exportador FBX. [Guía y prueba del paquete](unity/com.nikix.aethryx/README.md)
+- Pasaron 70 pruebas. La evidencia de Unity corresponde al fixture de cuerpo y ojo, y la evaluación artística con referencias Nikix sigue pendiente.
+- Siguiente tarea concreta. Completar comandos locales de edición y guardar posiciones de articulaciones editadas para la exportación.

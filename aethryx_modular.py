@@ -59,24 +59,29 @@ def facial_vertices(mesh, factors):
     width, height, depth = high - low
     x, y, z = ((mesh.vertices - low) / (high - low)).T
     side = np.sign(x - .5)
+    guides = mesh.metadata.get("aethryx_face_levels", {})
+    def level(name, fallback):
+        return (guides[name] - low[1]) / height if name in guides else fallback
 
     def weight(px, py, sx, sy):
         front = np.clip((z - .40) / .46, 0, 1)
         return np.exp(-((x - px) / sx)**2 - ((y - py) / sy)**2) * front
 
-    jaw = weight(.5, -.06, .48, .22)
+    jaw = weight(.5, level("jaw", -.06), .48, .22)
     cheek = weight(.5 + side * .25, .29, .22, .19)
-    mouth = weight(.5, .02, .24, .10)
-    lip = weight(.5, .022, .21, .055)
-    nose = weight(.5, .34, .13, .20)
+    mouth_level = level("mouth", .02)
+    eye_level = level("eye", .36)
+    mouth = weight(.5, mouth_level, .24, .10)
+    lip = weight(.5, mouth_level + .002, .21, .055)
+    nose = weight(.5, level("nose", .34), .13, .20)
     eye_x = .5 + side * .214
-    eyes = weight(eye_x, .36, .19, .14)
+    eyes = weight(eye_x, eye_level, .19, .14)
     result = mesh.vertices.copy()
     result[:, 0] += width * ((x - .5) * (jaw * scale["jaw"] + mouth * scale["mouth"])
                              + (x - eye_x) * eyes * scale["eye_size"]
                              + side * .214 * eyes * scale["eye_spacing"])
-    result[:, 1] += height * ((y - .36) * eyes * scale["eye_size"] - .20 * jaw * scale["jaw"])
-    result[:, 1] += height * (y - .022) * lip * scale["lips"]
+    result[:, 1] += height * ((y - eye_level) * eyes * scale["eye_size"] - .20 * jaw * scale["jaw"])
+    result[:, 1] += height * (y - mouth_level - .002) * lip * scale["lips"]
     result[:, 2] += depth * (.20 * cheek * scale["cheeks"] + .34 * nose * scale["nose"]
                              + .10 * mouth * scale["mouth"] + .11 * lip * scale["lips"])
     return result

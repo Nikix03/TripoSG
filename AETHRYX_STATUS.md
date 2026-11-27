@@ -3,6 +3,8 @@
 ## Genesis Quality · Recuperación
 
 - Se conservaron y validaron los cambios locales del conector Ollama. KIRIA permite buscar modelos locales, conversar cuando hay un servicio activo y revisar un cambio estructurado antes de aplicarlo. La prueba controlada pasó junto con las 67 pruebas anteriores. En este entorno, el servicio local rechazó la conexión.
+- **Cuerpo anime v2** genera una cabeza procedural soldada al cuello, con ojos agrandados, párpados, cejas, pestañas y una línea de labios que acompaña los morphs. El pelo admite 18 mechones independientes sobre una cubierta de fondo. La prueba femenina conservó un volumen cerrado de 24.258 caras y obtuvo cero autointersecciones detectadas. [Comparación con iluminación toon de revisión](test_assets/anime/genesis-quality/comparacion-v2.png)
+- El paquete local de Editor importó el GLB v2 en Unity 2022.3.22f1 con Avatar Humanoid válido, 53 huesos y 23 morphs en el cuerpo. La rotación de control produjo 0,1629 unidades de desplazamiento al hornear la malla. La prueba usó dos mallas con skin y una textura de iris. FBX, Poiyomi y el SDK de VRChat siguen pendientes de validación.
 
 ## 26 de noviembre de 2026 · Genesis Extended
 

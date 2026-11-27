@@ -12,6 +12,7 @@ import numpy as np
 from PIL import Image
 
 from aethryx_anatomy import blocking_geometry_issues, validate_deformation
+from aethryx_anime import hair_locks, sculpted_body, sculpted_face_parts
 from aethryx_bridge import inspect_avatar_glb
 from aethryx_materials import CHANNELS, RESOLUTIONS, color_gradient, save_pbr_maps, transform_uv, update_pbr_maps, uv_quality
 from aethryx_rig import export_rigged_avatar, preview_expression, preview_pose
@@ -50,6 +51,7 @@ class ComponentDialog(tk.Toplevel):
              ("Degradado por pieza…", self.gradient), ("Calzado…", self.footwear)),
             (("Perfil anime…", self.create_profile), ("Párpados", self.eyelids), ("Interior bucal", self.mouth),
              ("Cabello por regiones…", self.hair_regions), ("Ocultar región corporal…", self.toggle_body_band)),
+            (("Cuerpo anime v2…", self.create_sculpted_body), ("Mechones independientes…", self.independent_hair)),
             (("Mapas PBR…", self.pbr), ("Diagnóstico UV…", self.diagnose_uv), ("Ajustar UV…", self.edit_uv),
              ("Guardar conjunto…", self.save_outfit), ("Abrir conjunto…", self.load_outfit)),
             (("Exportar rig GLB…", self.export_rig), ("Guardar pose de prueba…", self.export_pose),
@@ -196,6 +198,40 @@ class ComponentDialog(tk.Toplevel):
                                          initialvalue="femenino", parent=self)
         if profile is not None:
             self._edit(lambda: self.avatar.add(BODY, anime_body("Anime " + profile.strip().lower())), BODY)
+
+    def create_sculpted_body(self):
+        profile = simpledialog.askstring("Cuerpo anime v2", "Elige neutro, femenino o masculino.",
+                                         initialvalue="femenino", parent=self)
+        if profile is None:
+            return
+        def generate():
+            if BODY in self.avatar.nodes:
+                raise ValueError("Abre una escena nueva para conservar el cuerpo base actual.")
+            body = sculpted_body("Anime " + profile.strip().lower())
+            issues = blocking_geometry_issues(validate_deformation(body, body))
+            if issues:
+                raise ValueError("\n".join(issues))
+            self._group({BODY: body, **sculpted_face_parts(body)})
+            return "Cuerpo con cabeza procedural, ojos, párpados, pestañas y cejas."
+        self._edit_background(generate, BODY)
+
+    def independent_hair(self):
+        length = simpledialog.askfloat(
+            "Mechones de cabello", "Longitud posterior de 0 a 1.", minvalue=0, maxvalue=1,
+            initialvalue=.45, parent=self,
+        )
+        if length is None:
+            return
+        _, root = colorchooser.askcolor(color="#291d40", title="Raíces", parent=self)
+        if not root:
+            return
+        _, tip = colorchooser.askcolor(color="#a45483", title="Puntas", parent=self)
+        if tip:
+            def generate():
+                pieces = hair_locks(self._body(), length, root, tip)
+                old_hair = {name for name in self.avatar.nodes if name.startswith("cabello")}
+                self._group(pieces, old_hair - pieces.keys())
+            self._edit(generate)
 
     def _group(self, pieces, hide=()):
         working = ModularAvatar(self.avatar.scene, self.avatar.hidden)

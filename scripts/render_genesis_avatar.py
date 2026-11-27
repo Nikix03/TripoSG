@@ -9,7 +9,7 @@ import pyvista as pv
 import trimesh
 
 
-def render_review(source, output):
+def render_review(source, output, *, toon=False):
     scene = trimesh.load(source, force="scene", process=False)
     center = scene.bounds.mean(axis=0)
     height = scene.extents[1]
@@ -40,7 +40,14 @@ def render_review(source, output):
                 else:
                     factor = getattr(material, "baseColorFactor", None)
                     color = tuple(factor[:3] / 255) if factor is not None else "#c6d4df"
-                    plotter.add_mesh(poly, color=color, smooth_shading=True)
+                    if toon and factor is not None:
+                        light = np.array([-.32, .64, .70])
+                        power = mesh.vertex_normals @ (light / np.linalg.norm(light))
+                        bands = np.select((power > .55, power > .13), (1., .83), default=.64)
+                        poly.point_data["toon_rgb"] = np.rint(bands[:, None] * factor[:3]).astype(np.uint8)
+                        plotter.add_mesh(poly, scalars="toon_rgb", rgb=True, lighting=False)
+                    else:
+                        plotter.add_mesh(poly, color=color, smooth_shading=True)
             plotter.camera_position = (target + np.asarray(direction) * height * 3, target, (0, 1, 0))
             plotter.enable_parallel_projection()
             plotter.camera.parallel_scale = scale * height
@@ -61,5 +68,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scene")
     parser.add_argument("output")
+    parser.add_argument("--toon", action="store_true")
     args = parser.parse_args()
-    render_review(args.scene, args.output)
+    render_review(args.scene, args.output, toon=args.toon)

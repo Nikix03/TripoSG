@@ -1,0 +1,7 @@
+{
+  "name": "com.nikix.aethryx",
+  "displayName": "AETHRYX Studio Bridge",
+  "version": "0.1.0",
+  "unity": "2022.3",
+  "description": "Imports native Genesis humanoid GLB files in the Unity Editor."
+}
