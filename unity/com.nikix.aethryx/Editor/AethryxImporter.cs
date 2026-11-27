@@ -24,7 +24,8 @@ namespace Nikix.Aethryx
         [Serializable] class Skin { public int[] joints; public int inverseBindMatrices; public int skeleton; }
         [Serializable] class Accessor { public int bufferView, byteOffset, count, componentType; public string type; }
         [Serializable] class View { public int byteOffset, byteLength, byteStride; }
-        [Serializable] class MaterialDef { public Pbr pbrMetallicRoughness; public string alphaMode; public float alphaCutoff = .5f; }
+        [Serializable] class MaterialDef { public Pbr pbrMetallicRoughness; public string alphaMode;
+            public float alphaCutoff = .5f; public float[] emissiveFactor; public TextureInfo emissiveTexture; }
         [Serializable] class Pbr { public float[] baseColorFactor; public TextureInfo baseColorTexture;
             public float roughnessFactor = 1f, metallicFactor = 1f; }
         [Serializable] class TextureInfo { public int index; }
@@ -137,6 +138,10 @@ namespace Nikix.Aethryx
                     result = new Material(shader);
                     if (previous.HasProperty("_Color")) result.color = previous.color;
                     if (previous.HasProperty("_MainTex")) result.mainTexture = previous.mainTexture;
+                    if (previous.HasProperty("_EmissionColor"))
+                        result.SetColor("_EmissionColor", previous.GetColor("_EmissionColor"));
+                    if (previous.HasProperty("_EmissionMap"))
+                        result.SetTexture("_EmissionMap", previous.GetTexture("_EmissionMap"));
                     if (previous.IsKeywordEnabled("_ALPHATEST_ON") && previous.HasProperty("_Cutoff"))
                         result.SetFloat("_Cutoff", previous.GetFloat("_Cutoff"));
                     AssetDatabase.CreateAsset(result, folder + "/toon-" + converted.Count + ".mat");
@@ -285,12 +290,17 @@ namespace Nikix.Aethryx
                 material.SetFloat("_Glossiness", 1 - pbr.roughnessFactor);
                 if (pbr.baseColorTexture != null)
                 {
-                    var texture = new Texture2D(2, 2, TextureFormat.RGBA32, true);
-                    if (!ImageConversion.LoadImage(texture, file.Image(file.Data.textures[pbr.baseColorTexture.index].source)))
-                        throw new InvalidDataException("No se pudo decodificar textura de color GLB.");
-                    AssetDatabase.CreateAsset(texture, folder + "/color-" + index + ".asset");
-                    material.mainTexture = texture;
+                    material.mainTexture = BuildTexture(file, pbr.baseColorTexture, folder + "/color-" + index);
                 }
+            }
+            if (def.emissiveFactor != null && def.emissiveFactor.Length == 3)
+            {
+                material.SetColor("_EmissionColor",
+                    new Color(def.emissiveFactor[0], def.emissiveFactor[1], def.emissiveFactor[2]));
+                if (def.emissiveTexture != null)
+                    material.SetTexture("_EmissionMap", BuildTexture(file, def.emissiveTexture, folder + "/emission-" + index));
+                material.globalIlluminationFlags = MaterialGlobalIlluminationFlags.BakedEmissive;
+                material.EnableKeyword("_EMISSION");
             }
             if (def.alphaMode == "MASK")
             {
@@ -300,6 +310,15 @@ namespace Nikix.Aethryx
             }
             AssetDatabase.CreateAsset(material, folder + "/pbr-" + index + ".mat");
             return material;
+        }
+
+        static Texture2D BuildTexture(Binary file, TextureInfo info, string path)
+        {
+            var texture = new Texture2D(2, 2, TextureFormat.RGBA32, true);
+            if (!ImageConversion.LoadImage(texture, file.Image(file.Data.textures[info.index].source)))
+                throw new InvalidDataException("No se pudo decodificar la textura GLB.");
+            AssetDatabase.CreateAsset(texture, path + ".asset");
+            return texture;
         }
 
         static Avatar BuildHumanoid(GameObject root, Transform[] transforms, Skin skin)

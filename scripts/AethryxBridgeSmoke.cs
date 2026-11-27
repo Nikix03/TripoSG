@@ -54,13 +54,25 @@ public static class AethryxBridgeSmoke {
                 a = before.vertices; b = after.vertices;
                 if (Enumerable.Range(0, a.Length).Max(i => Vector3.Distance(a[i], b[i])) < .001f)
                     throw new InvalidOperationException("Viseme did not deform.");
+                eyeBone.localRotation = Quaternion.identity;
+                body.SetBlendShapeWeight(body.sharedMesh.GetBlendShapeIndex("vrc.v_aa"), 0);
             }
+            arm.localRotation = Quaternion.identity;
             var clips = AssetDatabase.FindAssets("t:AnimationClip", new[]{"Assets/AETHRYX"}).Length;
             if (clips < 1) throw new InvalidOperationException("Missing animation clip.");
+            var trim = renderers.FirstOrDefault(r => r.name == "ropa-ribete-emisivo");
+            if (trim != null && (!trim.sharedMaterial.IsKeywordEnabled("_EMISSION") ||
+                                 trim.sharedMaterial.GetColor("_EmissionColor").maxColorComponent < .1f))
+                throw new InvalidOperationException("Missing PBR emission: " + trim.sharedMaterial.GetColor("_EmissionColor")
+                    + " keyword=" + trim.sharedMaterial.IsKeywordEnabled("_EMISSION"));
             Selection.activeGameObject = root;
             AethryxImporter.ApplyToonToSelection();
             if (renderers.Any(r => r.sharedMaterial.shader.name != "AETHRYX/Toon"))
                 throw new InvalidOperationException("Missing Toon.");
+            if (trim != null && trim.sharedMaterial.GetColor("_EmissionColor").maxColorComponent < .1f)
+                throw new InvalidOperationException("Missing toon emission.");
+            if (Environment.GetEnvironmentVariable("AETHRYX_UNITY_FBX") == "1")
+                TestFbx(root);
             Debug.Log("AETHRYX_SMOKE renderer=" + renderers.Length + " bones=" + body.bones.Length +
                 " morphs=" + body.sharedMesh.blendShapeCount + " delta=" + displacement +
                 " human=" + (animator != null && animator.avatar.isHuman) + " clips=" + clips + " toon=True");
@@ -68,6 +80,38 @@ public static class AethryxBridgeSmoke {
         } catch (Exception exc) {
             Debug.LogException(exc);
             EditorApplication.Exit(1);
+        }
+    }
+
+    static void TestFbx(GameObject root)
+    {
+        var path = AssetDatabase.GenerateUniqueAssetPath("Assets/AETHRYX/nikix-roundtrip.fbx");
+        AethryxFbx.Export(root, System.IO.Path.GetFullPath(path));
+        AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+        var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+        importer.importBlendShapes = true;
+        importer.optimizeGameObjects = false;
+        importer.SaveAndReimport();
+        var imported = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+        var mesh = imported.GetComponentsInChildren<SkinnedMeshRenderer>()
+            .Single(r => r.name.Replace('_', '-') == "cuerpo-base");
+        var source = root.GetComponentsInChildren<SkinnedMeshRenderer>().Single(r => r.name == "cuerpo-base");
+        var joints = imported.GetComponentsInChildren<Transform>().Select(t => t.name).ToHashSet();
+        var body = mesh.sharedMesh;
+        using (var weights = body.GetAllBoneWeights())
+        using (var original = source.sharedMesh.GetAllBoneWeights()) {
+            int visemes = Enumerable.Range(0, body.blendShapeCount)
+                .Count(i => body.GetBlendShapeName(i).Contains("vrc.v_"));
+            var originalWeighted = original.ToArray().Where(w => w.weight > .001f)
+                .Select(w => source.bones[w.boneIndex].name).ToHashSet();
+            var reimportedWeighted = weights.ToArray().Where(w => w.weight > .001f)
+                .Select(w => mesh.bones[w.boneIndex].name).ToHashSet();
+            int skeletonCount = source.bones.Count(bone => joints.Contains(bone.name));
+            Debug.Log("AETHRYX_FBX skeleton=" + skeletonCount + " weighted=" + reimportedWeighted.Count
+                + " weights=" + weights.Length + " morphs=" + body.blendShapeCount + " visemes=" + visemes);
+            if (skeletonCount != 53 || !originalWeighted.SetEquals(reimportedWeighted) ||
+                body.blendShapeCount != 23 || visemes != 15)
+                throw new InvalidOperationException("FBX round-trip lost a binding or blendshape.");
         }
     }
 }

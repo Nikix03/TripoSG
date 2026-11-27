@@ -354,6 +354,30 @@ def body_contacts(body, component):
     return {"contacts": collision.GetNumberOfContacts(), "inside": inside}
 
 
+def fit_component_to_patch(body, patch, generated):
+    """Align a Y-up generated component with an editable Genesis surface patch."""
+    if not body.is_volume:
+        raise ValueError("Se necesita un cuerpo base cerrado y orientado.")
+    if any(len(mesh.faces) == 0 or not np.isfinite(mesh.vertices).all() for mesh in (patch, generated)):
+        raise ValueError("El parche y la malla generada deben contener triángulos finitos.")
+    target = np.quantile(patch.vertices, [.02, .98], axis=0)
+    source = np.quantile(generated.vertices, [.02, .98], axis=0)
+    target_size, source_size = target[1] - target[0], source[1] - source[0]
+    axes = np.argsort(target_size)[-2:]
+    epsilon = max(float(body.extents[1]) * 1e-5, 1e-10)
+    if np.any(target_size[axes] < epsilon) or np.any(source_size[axes] < epsilon):
+        raise ValueError("El ajuste requiere extensión medible en dos ejes del parche.")
+    scale = float(np.exp(np.log(target_size[axes] / source_size[axes]).mean()))
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError("La escala del componente no es válida.")
+    result = generated.copy()
+    result.apply_translation(-source.mean(axis=0))
+    result.apply_scale(scale)
+    result.apply_translation(target.mean(axis=0))
+    result.metadata["aethryx_component_fit"] = {"uniform_scale": scale, "axes": axes.tolist()}
+    return result, body_contacts(body, result)
+
+
 GARMENT_STYLES = {"top": (.53, .735), "falda": (.32, .55), "vestido": (.31, .735)}
 BODY_PREVIEW_BANDS = {"torso": (.56, .698, .117), "cadera": (.45, .51, .18)}
 
@@ -415,7 +439,7 @@ def _radial_profile(outline, directions):
     return center, np.maximum(radius, .25 * np.roll(radius, 1) + .50 * radius + .25 * np.roll(radius, -1))
 
 
-def fit_footwear(body, clearance=.007, thickness=.006, color="#353044"):
+def fit_footwear(body, clearance=.007, thickness=.006, color="#353044", *, rounded=False):
     """Fit independent boot shells with a floor and an open ankle collar."""
     if not body.is_watertight or not .003 <= clearance <= .03 or not .002 <= thickness <= .03:
         raise ValueError("El calzado requiere cuerpo cerrado, holgura 0,003–0,03 y espesor 0,002–0,03.")
@@ -437,23 +461,39 @@ def fit_footwear(body, clearance=.007, thickness=.006, color="#353044"):
             raise ValueError(f"No se pudo medir el pie {side}.")
         hull = footprint[ConvexHull(footprint).vertices]
         center, radii = _radial_profile(np.vstack((hull, hull[0])), directions)
-        geometry = []
-        for level, margin in (
+        levels = (
             (low[1] - (clearance + thickness) * height, clearance + thickness),
             (ankle_height, clearance + thickness),
             (ankle_height, clearance),
             (low[1] - clearance * height, clearance),
-        ):
+        )
+        if rounded:
+            # Lower the front of the opening over the toes and round the sole edge.
+            toe = .5 + .5 * np.sin(theta)
+            opening = ankle_height - .038 * height * toe**2
+            levels = (
+                (levels[0][0], clearance + .55 * thickness),
+                (levels[0][0] + .005 * height, clearance + thickness),
+                (opening - .009 * height, clearance + thickness),
+                (opening, clearance + thickness),
+                (opening, clearance),
+                (opening - .009 * height, clearance),
+                (levels[-1][0], clearance),
+            )
+        geometry = []
+        for level, margin in levels:
             xz = center + directions * (radii + margin * height)[:, None]
-            geometry.append(np.column_stack((xz[:, 0], np.full(n, level), xz[:, 1])))
+            geometry.append(np.column_stack((xz[:, 0], np.broadcast_to(level, n), xz[:, 1])))
         walls = np.vstack([np.column_stack((ring + step * n, next_ring + step * n,
                                              next_ring + (step + 1) * n, ring + (step + 1) * n))
-                           for step in range(3)])
+                           for step in range(len(geometry) - 1)])
+        last_ring = (len(geometry) - 1) * n
+        floor_index = len(geometry) * n
         caps = np.vstack((
-            np.column_stack((ring, next_ring, np.full(n, 4 * n))),
-            np.column_stack((next_ring + 3 * n, ring + 3 * n, np.full(n, 4 * n + 1))),
+            np.column_stack((ring, next_ring, np.full(n, floor_index))),
+            np.column_stack((next_ring + last_ring, ring + last_ring, np.full(n, floor_index + 1))),
         ))
-        floor_centers = [[center[0], geometry[0][0, 1], center[1]], [center[0], geometry[3][0, 1], center[1]]]
+        floor_centers = [[center[0], geometry[index][0, 1], center[1]] for index in (0, -1)]
         footwear = trimesh.Trimesh(
             vertices=np.vstack((*geometry, floor_centers)),
             faces=np.vstack((walls[:, [0, 1, 2]], walls[:, [0, 2, 3]], caps)), process=False,

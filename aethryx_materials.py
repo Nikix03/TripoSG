@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+import trimesh
 from trimesh.visual.material import PBRMaterial
 from trimesh.visual.texture import TextureVisuals
 
@@ -78,6 +79,41 @@ def transform_uv(mesh, scale, offset):
         raise ValueError("La transformación UV requiere escalas positivas.")
     mesh.visual.uv = uv * scale + offset
     return mesh
+
+
+def unwrap_uv(mesh):
+    """Generate a packed xatlas UV layout while preserving surface positions and normals."""
+    try:
+        import xatlas
+    except ImportError as exc:
+        raise ValueError("La generación de atlas UV requiere xatlas en el entorno local.") from exc
+    source = getattr(mesh.visual, "material", None)
+    maps = ("baseColorTexture", "normalTexture", "metallicRoughnessTexture", "occlusionTexture",
+            "emissiveTexture", "image")
+    if any(getattr(source, name, None) is not None for name in maps):
+        raise ValueError("Genera el atlas antes de colocar texturas. Los mapas existentes se conservan.")
+    if not len(mesh.faces) or not np.isfinite(mesh.vertices).all():
+        raise ValueError("La pieza no contiene triángulos válidos.")
+    atlas = xatlas.Atlas()
+    vertices = np.ascontiguousarray(mesh.vertices, dtype=np.float32)
+    faces = np.ascontiguousarray(mesh.faces, dtype=np.uint32)
+    atlas.add_mesh(vertices, faces)
+    packing = xatlas.PackOptions()
+    packing.resolution = 1024
+    packing.padding = 4
+    atlas.generate(pack_options=packing)
+    source_index, indices, uv = atlas[0]
+    if not np.array_equal(source_index[indices], faces):
+        raise ValueError("El atlas cambió el orden o la orientación de los triángulos.")
+    material = source.copy() if isinstance(source, PBRMaterial) else PBRMaterial()
+    if source is None and getattr(mesh.visual, "kind", None) in ("vertex", "face"):
+        raise ValueError("La pieza ya contiene colores proyectados. Consérvalos o crea una copia para texturizar.")
+    result = trimesh.Trimesh(vertices=mesh.vertices[source_index], faces=indices, process=False,
+                             vertex_normals=mesh.vertex_normals[source_index],
+                             visual=TextureVisuals(uv=uv, material=material))
+    result.metadata.update(mesh.metadata)
+    result.metadata["aethryx_uv_projection"] = "xatlas"
+    return result
 
 
 def uv_quality(mesh, samples=256):

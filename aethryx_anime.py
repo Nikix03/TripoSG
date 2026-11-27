@@ -115,9 +115,10 @@ def _sweep(points, radii, sides=10, *, closed=False):
     horizontal /= np.linalg.norm(horizontal, axis=1, keepdims=True)
     vertical = np.cross(tangent, horizontal)
     angle = np.linspace(0, 2 * np.pi, sides, endpoint=False)
-    rings = points[:, None] + radii[:, None, None] * (
-        np.cos(angle)[None, :, None] * horizontal[:, None] +
-        np.sin(angle)[None, :, None] * vertical[:, None]
+    radii = np.broadcast_to(np.reshape(radii, (len(points), -1)), (len(points), 2))
+    rings = points[:, None] + (
+        radii[:, 0, None, None] * np.cos(angle)[None, :, None] * horizontal[:, None] +
+        radii[:, 1, None, None] * np.sin(angle)[None, :, None] * vertical[:, None]
     )
     j = np.arange(sides)
     following = np.roll(j, -1)
@@ -187,13 +188,13 @@ def sculpted_face_parts(body, colors=("#6589d4", "#ae6798")):
     return parts
 
 
-def nikix_hair(body):
+def nikix_hair(body, *, ribbons=False):
     """Original swept locks with separate textures and UVs following their lengths."""
     height = body.extents[1]
     cx, _, cz, _ = body.metadata["aethryx_eye_guide"]
     crown = body.bounds[1, 1]
-    root = "#e8b86c"
-    parts = {"cabello-fondo": fit_hair(body, length=.36, volume=.022, color=root)}
+    root = "#efb94f" if ribbons else "#e8b86c"
+    parts = {"cabello-fondo": fit_hair(body, length=.58 if ribbons else .36, volume=.022, color=root)}
     t = np.linspace(0., 1., 36)
     for index, angle in enumerate(np.linspace(-np.pi, np.pi, 20, endpoint=False)):
         front = np.cos(angle) > .48
@@ -209,10 +210,20 @@ def nikix_hair(body):
             y = crown + height * (.006 - (.35 + .024 * np.sin(index * 2)) * t**1.35)
             z = cz - .044 * height + np.cos(angle) * radial - .042 * height * t
         radii = height * (.003 + .010 * np.sin(np.pi * t)**.55) * (1 - .86 * t**5)
-        mesh = _sweep(np.column_stack((x, y, z)), radii)
+        sides = 10
+        if ribbons:
+            tip = "#ff508f" if np.sin(angle) < 0 else "#32c6f5"
+            wave = t**1.4 * np.sin(t * np.pi * 2 + index * .6)
+            x += height * (.017 if front else .032) * wave
+            z += height * (.004 if front else .019) * wave
+            y += height * t**2 * .012 * np.sin(index * 1.6)
+            width = height * (.003 + .020 * np.sin(np.pi * t)**.72) * (1 - .94 * t**5)
+            radii = np.column_stack((width, width * (.26 if front else .20)))
+            sides = 14
+        mesh = _sweep(np.column_stack((x, y, z)), radii, sides=sides)
         mesh = apply_material(mesh, "#ffffff", projection="cylindrical",
                               roughness=.66, image=color_gradient(root, tip))
-        v = np.r_[np.repeat(1 - t, 10), 1., 0.]
+        v = np.r_[np.repeat(1 - t, sides), 1., 0.]
         mesh.visual.uv[:, 1] = v
         zone = "flequillo" if front else "largo"
         parts[f"cabello-{zone}-{index + 1:02}"] = mesh
@@ -261,18 +272,33 @@ def _nikix_jewelry(body):
     return parts
 
 
-def nikix_preset():
+def nikix_preset(*, version=3):
+    if version not in (3, 4):
+        raise ValueError("Elige el preset Nikix 3 o 4.")
+    v4 = version == 4
     body = sculpted_body("Anime femenino", refined=True)
     dress, _ = fit_garment_with_clearance(body, .016, .006, "vestido")
-    dress = apply_material(dress, "#655a9d", roughness=.8)
-    return {
+    dress = apply_material(dress, "#52318a" if v4 else "#655a9d", roughness=.8)
+    pieces = {
         BODY: body,
-        **sculpted_face_parts(body, ("#e58caf", "#66beda")),
-        **nikix_hair(body),
+        **sculpted_face_parts(body, ("#ed67a4", "#33bce3") if v4 else ("#e58caf", "#66beda")),
+        **nikix_hair(body, ribbons=v4),
         "ropa-vestido": dress,
-        **fit_footwear(body, color="#554878"),
+        **fit_footwear(body, color="#473060" if v4 else "#554878", rounded=v4),
         **_nikix_jewelry(body),
     }
+    if v4:
+        height = body.extents[1]
+        vertices = np.asarray(dress.vertices)
+        rim = vertices[np.isclose(vertices[:, 1], vertices[:, 1].max())]
+        neckline = rim[:len(rim) // 2].copy()
+        neckline[:, 1] += .001 * height
+        trim = _sweep(neckline, np.full(len(neckline), .0023 * height), closed=True)
+        trim = apply_material(trim, "#e4abda", projection="cylindrical", roughness=.45)
+        trim.visual.material.emissiveFactor = [.17, .026, .09]
+        trim.metadata["aethryx_garment"] = dress.metadata["aethryx_garment"].copy()
+        pieces["ropa-ribete-emisivo"] = trim
+    return pieces
 
 
 def hair_locks(body, length=.45, root="#291d40", tip="#a45483"):

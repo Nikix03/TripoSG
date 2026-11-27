@@ -1,5 +1,14 @@
 # Estado de AETHRYX Studio
 
+## Genesis Evolution · Nikix V4, atlas y exportación FBX
+
+- **Preset Nikix v4** añade 42 piezas, cabello curvo con sección aplanada y puntas saturadas, un perfil de calzado con abertura descendente y suela biselada, y un ribete emisivo independiente. V3 continúa disponible. El ensayo detectó cero contactos del ribete con el cuerpo. La revisión muestra mejoras parciales y conserva las limitaciones de rostro, cobertura de raíces, manos y anatomía del pie. [Comparación V3 y V4](test_assets/anime/project-nikix/comparacion-v3-v4.png) · [Cuatro vistas V4](test_assets/anime/project-nikix/nikix-v4-review.png)
+- **Generar atlas UV** usa xatlas ya instalado. Se aplica a piezas independientes antes de colocar texturas y conserva triángulos, normales y material base. Duplicar vértices de costura conserva la superficie pero cambia los índices. En el vestido se midió 0 % de superposición muestreada a 256 × 256, sin UV fuera del tile ni caras UV degeneradas. El flujo protege las texturas y los colores proyectados existentes.
+- Unity 2022.3.22f1 verificó 42 mallas, Humanoid válido, 53 articulaciones, 23 morphs, 15 visemas y emisión en Standard y toon. El puente FBX usa Unity FBX Exporter 4.2.1 oficial. Tras reimportar el archivo temporal se conservaron 53 nodos del esqueleto, el conjunto de 51 huesos con influencia corporal superior a 0,001, 53.657 entradas de peso, 23 morphs y 15 visemas. El exportador normaliza algunos nombres de nodo. El ensayo comprueba enlaces y presencia de pesos, sin una comparación numérica vértice por vértice. [API oficial de FBX Exporter](https://docs.unity3d.com/Packages/com.unity.formats.fbx@4.2/api/UnityEditor.Formats.Fbx.Exporter.ModelExporter.html)
+- El administrador permite ajustar una malla externa a un parche guía mediante escala uniforme y centro robustos. Añade un nodo de borrador independiente y reporta contactos y vértices interiores. El ajuste presupone ejes compatibles y no altera el modelo de origen. La regresión verifica traslación, escala y conservación del original.
+- Pasaron 81 pruebas. Ollama volvió a rechazar la conexión en loopback, por lo que no se midió inferencia de conversación.
+
+
 ## Genesis Evolution · Visión y transferencia de color
 
 - Inicio limpio en `bbd26c0`. **Reconstrucción anatómica → Ejecutar See-through** usa el parser SAM-HQ V2 oficial desde un proceso separado. Se seleccionan el código, el checkpoint local y el Python CUDA. Se verificó el recorrido real y la cancelación. El modelo conserva los ojos como clase independiente. Su clase corporal nativa corresponde al cuello. Se mantienen separadas la máscara de cuerpo completo y la segmentación visible.

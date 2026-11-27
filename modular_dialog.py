@@ -11,15 +11,17 @@ import tkinter as tk
 import numpy as np
 from PIL import Image
 
-from aethryx_anatomy import blocking_geometry_issues, validate_deformation
+from aethryx_anatomy import blocking_geometry_issues, load_body_template, validate_deformation
 from aethryx_anime import hair_locks, nikix_preset, sculpted_body, sculpted_face_parts
 from aethryx_bridge import inspect_avatar_glb
-from aethryx_materials import CHANNELS, RESOLUTIONS, color_gradient, save_pbr_maps, transform_uv, update_pbr_maps, uv_quality
+from aethryx_materials import (CHANNELS, RESOLUTIONS, color_gradient, save_pbr_maps, transform_uv,
+                              unwrap_uv, update_pbr_maps, uv_quality)
 from aethryx_rig import export_rigged_avatar, preview_expression, preview_pose
 from pose_dialog import PoseDialog
 from aethryx_modular import (
     BODY, BODY_PREVIEW_BANDS, EYES, FACE_CONTROLS, ModularAvatar, anime_body, apply_material, avatar_eye,
-    body_contacts, facial_vertices, fit_footwear, fit_garment_with_clearance, fit_hair, fitted_eyelids, head_frame,
+    body_contacts, facial_vertices, fit_component_to_patch, fit_footwear, fit_garment_with_clearance,
+    fit_hair, fitted_eyelids, head_frame,
     mouth_components, recolor_iris, regional_hair, write_new_glb,
 )
 
@@ -52,9 +54,11 @@ class ComponentDialog(tk.Toplevel):
             (("Perfil anime…", self.create_profile), ("Párpados", self.eyelids), ("Interior bucal", self.mouth),
              ("Cabello por regiones…", self.hair_regions), ("Ocultar región corporal…", self.toggle_body_band)),
             (("Cuerpo anime v2…", self.create_sculpted_body), ("Mechones independientes…", self.independent_hair)),
-            (("Preset Nikix v3", self.create_nikix),),
+            (("Preset Nikix v3", lambda: self.create_nikix(3)), ("Preset Nikix v4", self.create_nikix),
+             ("Ajustar malla a pieza…", self.fit_generated)),
             (("Mapas PBR…", self.pbr), ("Diagnóstico UV…", self.diagnose_uv), ("Ajustar UV…", self.edit_uv),
-             ("Guardar conjunto…", self.save_outfit), ("Abrir conjunto…", self.load_outfit)),
+             ("Generar atlas UV", self.generate_uv)),
+            (("Guardar conjunto…", self.save_outfit), ("Abrir conjunto…", self.load_outfit)),
             (("Exportar rig GLB…", self.export_rig), ("Guardar pose de prueba…", self.export_pose),
              ("Guardar expresión de prueba…", self.export_expression), ("Revisar rig GLB…", self.inspect_rig),
              ("Vista de pose…", self.pose_window)),
@@ -158,6 +162,24 @@ class ComponentDialog(tk.Toplevel):
     def _piece_path(self):
         return filedialog.askopenfilename(parent=self, filetypes=[("Malla", "*.glb *.obj *.ply *.stl")])
 
+    def fit_generated(self):
+        target = self._selected()
+        if not target or target == BODY:
+            self.status.set("Selecciona el parche o componente que servirá de guía.")
+            return
+        path = self._piece_path()
+        if not path:
+            return
+        node = f"{target}-ajuste"
+
+        def align():
+            candidate, report = fit_component_to_patch(self._body(), self.avatar.get(target, world=True),
+                                                       load_body_template(Path(path)))
+            self.avatar.add(node, candidate)
+            return f"Ajuste preliminar. Contactos {report['contacts']}, vértices dentro {report['inside']}."
+
+        self._edit_background(align, node)
+
     def remove(self):
         node = self._selected()
         if node:
@@ -234,16 +256,16 @@ class ComponentDialog(tk.Toplevel):
                 self._group(pieces, old_hair - pieces.keys())
             self._edit(generate)
 
-    def create_nikix(self):
+    def create_nikix(self, version=4):
         def generate():
             if self.avatar.nodes:
                 raise ValueError("Abre una escena vacía para generar el preset completo.")
-            parts = nikix_preset()
+            parts = nikix_preset(version=version)
             issues = blocking_geometry_issues(validate_deformation(parts[BODY], parts[BODY]))
             if issues:
                 raise ValueError("\n".join(issues))
             self._group(parts)
-            return "Preset procedural Nikix v3 generado con prendas y accesorios independientes."
+            return f"Preset procedural Nikix v{version} generado con prendas y accesorios independientes."
 
         self._edit_background(generate, BODY)
 
@@ -503,6 +525,18 @@ class ComponentDialog(tk.Toplevel):
         if values is not None:
             self._edit(lambda: self.avatar.replace(node, transform_uv(
                 self.avatar.get(node), values[:2], values[2:])), node)
+
+    def generate_uv(self):
+        node = self._selected()
+        if node == BODY:
+            self.status.set("Selecciona una pieza independiente para conservar la topología cerrada del cuerpo.")
+        elif node:
+            def generate():
+                mesh = unwrap_uv(self.avatar.get(node))
+                metrics = uv_quality(mesh)
+                self.avatar.replace(node, mesh)
+                return f"Atlas UV generado. Superposición muestreada {metrics['overlap_fraction']:.2%}."
+            self._edit_background(generate, node)
 
     def pbr(self):
         node = self._selected()
