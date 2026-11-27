@@ -21,7 +21,7 @@ from aethryx_engines import suggest_anatomical_points
 from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
 from aethryx_reference import (
     AnimeSilhouette, SEE_THROUGH_COLORS, SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, profile_opposite,
-    reference_silhouette, refine_visible_mask, segment_anime_reference,
+    named_reference_views, reference_silhouette, refine_visible_mask, segment_anime_reference,
     segment_see_through_v2, semantic_reference_regions, silhouette_calibration,
 )
 from proportion_dialog import ProportionDialog
@@ -64,6 +64,8 @@ class AnatomyDialog(tk.Toplevel):
         self.comparisons = {}
         self.comparison_mode = tk.BooleanVar(value=False)
         self.visual_hull = tk.BooleanVar(value=False)
+        self.export_rig = tk.BooleanVar(value=False)
+        self.infer_occlusion_depth = tk.BooleanVar(value=False)
         self.segmenter = None
         self.see_through = None
         self.segment_cancel = Event()
@@ -95,6 +97,7 @@ class AnatomyDialog(tk.Toplevel):
             ("Abrir ajuste…", self._open_setup),
             ("Guardar ajuste…", self._save_setup),
             ("Cargar imagen…", self._load_image),
+            ("Cargar conjunto…", self._load_reference_set),
             ("Máscara RGB…", self._load_mask),
             ("Máscara corporal…", self._load_body_mask),
             ("Paleta…", self._edit_palette),
@@ -158,6 +161,8 @@ class AnatomyDialog(tk.Toplevel):
         ttk.Checkbutton(controls, text="Comparar siluetas", variable=self.comparison_mode,
                         command=self._redraw).pack(side="left")
         ttk.Checkbutton(controls, text="Volumen semántico", variable=self.visual_hull).pack(side="left", padx=4)
+        ttk.Checkbutton(controls, text="Exportar rig GLB", variable=self.export_rig).pack(side="left", padx=4)
+        ttk.Checkbutton(controls, text="Inferir puntos ocluidos", variable=self.infer_occlusion_depth).pack(side="left", padx=4)
         ttk.Button(controls, text="Reconstruir y validar…", command=self._fit).pack(side="right")
 
     def _close(self):
@@ -256,6 +261,33 @@ class AnatomyDialog(tk.Toplevel):
         self.images[self.view] = preview
         self.views[self.view] = {"image": path, "points": {}}
         self._invalidate_comparison()
+        self._change_view()
+
+    def _load_reference_set(self):
+        if self.busy:
+            return
+        paths = filedialog.askopenfilenames(parent=self, filetypes=IMAGE_FILES,
+                                            title="Referencias con nombre frontal, lateral o posterior")
+        if not paths:
+            return
+        try:
+            chosen = named_reference_views(paths)
+            previews = {}
+            for name, path in chosen.items():
+                with Image.open(path) as image:
+                    previews[name] = image.convert("RGBA")
+        except (OSError, ValueError) as exc:
+            self._error(exc)
+            return
+        assignments = "\n".join(f"{VIEW_LABELS[name]} · {Path(path).name}" for name, path in chosen.items())
+        if not messagebox.askyesno("Confirmar perspectivas", assignments + "\n\n¿Cargar estas vistas y reiniciar sus ajustes?",
+                                   parent=self):
+            return
+        for name, path in chosen.items():
+            self.views[name] = {"image": path, "points": {}}
+        self.images.update(previews)
+        self._invalidate_comparison()
+        self.view_label.set(VIEW_LABELS[next(name for name in VIEWS if name in chosen)])
         self._change_view()
 
     def _load_mask(self):
@@ -782,15 +814,21 @@ class AnatomyDialog(tk.Toplevel):
             raise ValueError("Carga una plantilla corporal.")
         indices = self.indices.copy()
         bundled = self.template_path == str(BUNDLED_BODY)
-        if require_ready and bundled:
+        active = {name for name, state in self.views.items() if "image" in state}
+        partial = 0 < len(active) < 3
+        may_infer = partial or self.infer_occlusion_depth.get()
+        if require_ready and (bundled or partial):
             visible = {
                 name: {vertex for vertex, (point, _) in state["points"].items() if point is not None}
                 for name, state in self.views.items()
             }
-            usable = visible["side"] & (visible["front"] | visible["back"])
-            indices = [vertex for vertex in indices if vertex in usable or vertex not in POSE_VERTICES.values()]
+            usable = set().union(*visible.values()) if may_infer else visible["side"] & (visible["front"] | visible["back"])
+            indices = [vertex for vertex in indices if vertex in usable or
+                       (not may_infer and vertex not in POSE_VERTICES.values())]
         views = {}
         for name, state in self.views.items():
+            if require_ready and partial and name not in active:
+                continue
             if require_ready and ("image" not in state or "projection" not in state):
                 raise ValueError(f"Carga y calibra la vista {VIEW_LABELS[name].lower()}.")
             view = {key: deepcopy(value) for key, value in state.items() if key != "points"}
@@ -807,6 +845,8 @@ class AnatomyDialog(tk.Toplevel):
             "side_manual": self.side_manual,
             "profile": self.profile.get(),
             "bundled_template": bundled,
+            "allow_inferred_depth": may_infer,
+            "export_rig": self.export_rig.get(),
             "smoothing": .008 if bundled else 0,
             "proportions": {key: float(var.get().replace(",", ".")) for key, var in self.factors.items()},
         }
@@ -847,8 +887,8 @@ class AnatomyDialog(tk.Toplevel):
             raise ValueError("La plantilla o sus índices no son válidos.")
         views, images = {}, {}
         for name in VIEWS:
-            view = dict(data["views"][name])
-            landmarks = view.pop("landmarks")
+            view = dict(data["views"].get(name, {}))
+            landmarks = view.pop("landmarks", [[None, None] for _ in indices])
             if len(landmarks) != len(indices):
                 raise ValueError("El número de puntos no coincide con la plantilla.")
             for point in landmarks:
@@ -884,6 +924,8 @@ class AnatomyDialog(tk.Toplevel):
         self.pose_links = {vertex: joint for vertex, joint in pose_links.items() if vertex in indices}
         self.side.set(data.get("side_opposite", views["side"].get("projection", [[0, 0, -1]])[0][2] > 0))
         self.side_manual = data.get("side_manual", "side_opposite" in data)
+        self.infer_occlusion_depth.set(data.get("allow_inferred_depth") is True)
+        self.export_rig.set(data.get("export_rig") is True)
         for key, var in self.factors.items():
             var.set(data.get("proportions", {}).get(key, 1))
         self._invalidate_comparison()
@@ -899,6 +941,13 @@ class AnatomyDialog(tk.Toplevel):
         except ValueError as exc:
             self._error(exc)
             return
+        if data["allow_inferred_depth"] and not messagebox.askyesno(
+                "Reconstrucción parcial",
+                "Las direcciones sin observación conservarán la profundidad de la plantilla. ¿Continuar con un ajuste parcial?",
+                parent=self):
+            return
+        if self.export_rig.get():
+            data["export_rig"] = True
         if self.visual_hull.get():
             categories = tuple(name for name in data.get("palette", {}) if name not in {"body", "face", "eyes"})
             if not categories:
@@ -952,6 +1001,7 @@ class AnatomyDialog(tk.Toplevel):
             for name, value in report["silhouette_iou"].items()
             if value is not None
         ) or "sin primer plano fiable"
+        evidence = report["reference_evidence"]
         if not messagebox.askyesno("Validación del cuerpo", (
             f'{report["vertices"]:,} vértices / {report["faces"]:,} caras · Cerrado {closed}\n'
             f"Orientación consistente {winding}\n"
@@ -961,6 +1011,8 @@ class AnatomyDialog(tk.Toplevel):
             f'Simetría X, percentil 95 {report["symmetry_p95_height"]:.2%} de la altura\n\n'
             f"Reproyección antes de estilizar\n{summary}\n"
             f"IoU de siluetas · {silhouette}\n"
+            f"Vistas disponibles {len(evidence['observed_views'])} de 3 · "
+            f"Puntos con profundidad de plantilla {evidence['inferred_anchor_depths']}\n"
             "Una silueta de referencia puede incluir ropa y cabello.\n"
             "Verde coincide · rosa solo referencia · celeste solo modelo.\n\n¿Guardar el cuerpo completo?"
         ), parent=self):

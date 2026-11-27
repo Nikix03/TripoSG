@@ -1,6 +1,7 @@
 """Silhouettes and local multiclass masks for the Genesis reference views."""
 
 from pathlib import Path
+import re
 import subprocess
 from tempfile import TemporaryDirectory
 
@@ -16,6 +17,22 @@ SEMANTIC_COLORS = {
 
 ISNET_MODEL = Path(__file__).resolve().parent / "models" / "anime" / "isnetis.onnx"
 SEE_THROUGH_COLORS = {**SEMANTIC_COLORS, "eyes": (244, 219, 85)}
+
+
+def named_reference_views(paths):
+    """Read explicit angle names from filenames without guessing the image content."""
+    aliases = {"front": {"front", "frontal"}, "side": {"side", "perfil", "lateral"},
+               "back": {"back", "rear", "posterior", "espalda"}}
+    if not 1 <= len(paths) <= 3:
+        raise ValueError("Selecciona de una a tres imágenes.")
+    result = {}
+    for path in paths:
+        words = set(re.findall(r"[a-z]+", Path(path).stem.lower()))
+        matches = [view for view, names in aliases.items() if words & names]
+        if len(matches) != 1 or matches[0] in result:
+            raise ValueError(f"No se pudo asignar una vista única a {Path(path).name}. Cárgala en su vista manualmente.")
+        result[matches[0]] = path
+    return result
 
 
 class AnimeSilhouette:

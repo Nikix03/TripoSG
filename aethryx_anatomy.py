@@ -68,9 +68,11 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
         raise ValueError("Los puntos de control deben ocupar posiciones distintas.")
 
     matrices, offsets, observations, masks, visibility, reference_colors = [], [], [], [], [], []
-    if set(data["views"]) != set(VIEWS):
-        raise ValueError("Define exactamente las vistas front, side y back.")
-    for name in VIEWS:
+    names = [name for name in VIEWS if name in data["views"]]
+    partial = data.get("allow_inferred_depth") is True
+    if not names or set(names) != set(data["views"]) or (len(names) != 3 and not partial):
+        raise ValueError("Define de una a tres vistas calibradas. El modo parcial requiere autorizar profundidad inferida.")
+    for name in names:
         view = data["views"][name]
         projection = np.asarray(view["projection"], dtype=float)
         points = np.asarray(view["landmarks"], dtype=float)
@@ -100,16 +102,19 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
         masks.append(mask)
 
     system = np.vstack(matrices)
-    if np.linalg.matrix_rank(system) != 3:
+    if np.linalg.matrix_rank(system) != 3 and not partial:
         raise ValueError("Las cámaras no permiten recuperar profundidad.")
     targets = []
     measured = np.asarray(visibility).T.repeat(2, axis=1)
     values = np.hstack([points - offset for points, offset in zip(observations, offsets)])
+    ranks = {}
     for index, rows in enumerate(measured):
-        target, _, rank, _ = np.linalg.lstsq(system[rows], values[index, rows], rcond=None)
-        if rank != 3:
+        observed = system[rows]
+        delta, _, rank, _ = np.linalg.lstsq(observed, values[index, rows] - observed @ anchors[index], rcond=None)
+        if rank < 2 or (rank != 3 and not partial):
             raise ValueError(f"Las observaciones no resuelven la profundidad del vértice {ids[index]}.")
-        targets.append(target)
+        ranks[str(int(ids[index]))] = int(rank)
+        targets.append(anchors[index] + delta)
     smoothing = float(data.get("smoothing", 0))
     if not 0 <= smoothing <= .1:
         raise ValueError("El suavizado del ajuste debe estar entre 0 y 0,1.")
@@ -123,7 +128,7 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
             (mesh.vertices[ids[visible]] @ matrix.T + offset - points[visible]) ** 2, axis=1,
         ))))
         for name, matrix, offset, points, visible in zip(
-            VIEWS, matrices, offsets, observations, visibility,
+            names, matrices, offsets, observations, visibility,
         )
     }
     patches = partition_surfaces(mesh, matrices, offsets, masks, data.get("palette", {}),
@@ -145,6 +150,11 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
             raise ValueError("Las proporciones produjeron caras inválidas.")
     if deformation_report is not None:
         deformation_report.update(validate_deformation(original, mesh))
+        deformation_report["reference_evidence"] = {
+            "observed_views": names, "missing_views": [name for name in VIEWS if name not in names],
+            "anchor_rank": ranks, "inferred_anchor_depths": sum(rank < 3 for rank in ranks.values()),
+            "surface_model": "deformed_template",
+        }
     return mesh, patches, errors
 
 
@@ -326,6 +336,16 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
         trimesh.Scene({"cuerpo-base": mesh}).export(body, file_type="glb")
         modular = None
         components = [{"name": "cuerpo-base", "role": "body", "file": body.name}]
+        if data.get("export_rig") is True:
+            from aethryx_bridge import inspect_avatar_glb
+            from aethryx_rig import export_rigged_avatar
+
+            rigged = output / "cuerpo-articulado.glb"
+            export_rigged_avatar(trimesh.Scene({"cuerpo-base": mesh}), rigged)
+            diagnostic = inspect_avatar_glb(rigged)
+            if not diagnostic["valid_native_glb"]:
+                raise ValueError("El rig del cuerpo no pasó la comprobación GLB.")
+            components.append({"name": "cuerpo-articulado", "role": "rigged-body", "file": rigged.name})
         if set(patches.geometry) - {"sin-asignar"}:
             modular = output / "parches.glb"
             patches.export(modular, file_type="glb")

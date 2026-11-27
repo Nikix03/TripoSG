@@ -1,5 +1,13 @@
 # Estado de AETHRYX Studio
 
+## Genesis Origin · Vistas parciales y ensayo independiente
+
+- Git arrancó limpio en `29f3868`. **Cargar conjunto** asigna una a tres imágenes por nombres de vista y solicita confirmación. El ajuste usa calibraciones disponibles y continuidad de la plantilla en direcciones sin medir. El informe identifica las vistas presentes y el rango de cada punto. El asistente puede guardar y validar el GLB articulado del cuerpo en el mismo directorio que el cuerpo estático. Los parches permanecen independientes.
+- Ensayo reproducible con Mannequiny 0.3.0 de GDQuest y colaboradores, arte CC BY 4.0. Se normalizó y renderizó la malla de origen en tres cámaras ortográficas sin utilizarla como plantilla de reconstrucción. Genesis recibió las tres imágenes, calibración por silueta y ocho correspondencias anotadas manualmente, cuatro con profundidad inferida por oclusión lateral. El IoU fue 57,60 % frontal y posterior, y 43,91 % lateral. La diferencia de pose de brazos y geometría limita la fidelidad. El cuerpo ajustado superó la validación geométrica y el GLB articulado pasó la auditoría local; la salida sigue siendo una deformación de la plantilla. [Evaluación visual](test_assets/anime/project-nikix/origin-mannequiny.png) · [Reproducción](scripts/evaluate_origin_mannequiny.py) · [Origen y licencia](https://github.com/gdquest-demos/godot-3d-mannequin#licenses)
+- Evaluación de requisitos de otros motores. TripoSR publica código y pesos MIT, declara unos 6 GB y admite horneado de textura, pero su ruta oficial requiere torchmcubes. El entorno Windows actual no contiene torchmcubes ni tiene nvcc disponible. Stable Fast 3D documenta Windows con VS 2022 y una licencia Community con umbral comercial. No se instalaron ni ejecutaron estos motores. Adaptive Engine y TripoSG siguen disponibles. [TripoSR](https://github.com/VAST-AI-Research/TripoSR) · [Stable Fast 3D](https://github.com/Stability-AI/stable-fast-3d)
+- Pasaron 92 pruebas.
+
+
 ## Genesis Architect · Reparación localizada y FBX V6
 
 - Se añadió una reparación localizada de costuras en una copia sin texturas. Solo acepta un volumen orientado, sin cruces detectados, dentro del límite de caras y sin pérdida sustancial de silueta o cobertura. Cerró el agujero triangular de la regresión. El candidato de la malla TripoSG se descartó, y el borrador conservó 62 contactos, 7 vértices interiores y 10 aristas no manifold.

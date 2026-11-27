@@ -152,6 +152,42 @@ class ReconstructionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "profundidad"):
                 reconstruct(manifest)
 
+    def test_partial_reconstruction_retains_only_unobserved_template_depth(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            template = trimesh.creation.box()
+            template.export(root / "template.ply")
+            indices = [0, 1, 2, 4]
+            translation = np.array([.08, .12, .21])
+            target = template.vertices + translation
+            Image.new("RGB", (100, 100), "gray").save(root / "ref.png")
+            front = np.array([[40, 0, 0, 50], [0, -40, 0, 50]])
+            side = np.array([[0, 0, 40, 50], [0, -40, 0, 50]])
+
+            def view(projection):
+                return {"image": "ref.png", "projection": projection.tolist(),
+                        "landmarks": (target[indices] @ projection[:, :3].T + projection[:, 3]).tolist()}
+
+            data = {"template": "template.ply", "vertex_indices": indices, "allow_inferred_depth": True,
+                    "views": {"front": view(front)}}
+            report = {}
+            fitted, _, errors = reconstruct_data(data, root, deformation_report=report)
+            np.testing.assert_allclose(fitted.vertices, template.vertices + [.08, .12, 0])
+            self.assertEqual(report["reference_evidence"]["inferred_anchor_depths"], 4)
+            self.assertEqual(tuple(errors), ("front",))
+            data["views"]["side"] = view(side)
+            fitted, _, _ = reconstruct_data(data, root, deformation_report=report)
+            np.testing.assert_allclose(fitted.vertices, target)
+            self.assertEqual(report["reference_evidence"]["missing_views"], ["back"])
+            self.assertEqual(report["reference_evidence"]["inferred_anchor_depths"], 0)
+
+    def test_batch_filename_views_refuse_ambiguous_assignments(self):
+        from aethryx_reference import named_reference_views
+        self.assertEqual(named_reference_views(["hero-lateral.png", "hero-frontal.png"]),
+                         {"side": "hero-lateral.png", "front": "hero-frontal.png"})
+        with self.assertRaises(ValueError):
+            named_reference_views(["hero-frontal.png", "hero-front.png"])
+
 
 if __name__ == "__main__":
     unittest.main()
