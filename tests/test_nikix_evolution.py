@@ -6,7 +6,7 @@ from unittest.mock import patch
 import numpy as np
 import trimesh
 
-from aethryx_anime import nikix_preset
+from aethryx_anime import layered_hair, nikix_preset, sculpted_body
 from aethryx_anatomy import semantic_visual_hull
 from aethryx_materials import unwrap_uv, uv_quality
 from aethryx_modular import (BODY, _repair_hair_seams, body_contacts, fit_component_to_patch,
@@ -17,6 +17,14 @@ from aethryx_tools import execute_tool
 
 
 class NikixEvolutionTests(unittest.TestCase):
+    def test_layered_hair_length_and_colors_are_reusable(self):
+        body = sculpted_body("Anime masculino", refined=True, facial_loops=True)
+        short = layered_hair(body, length=.25, root="#223344", tips=("#aabbcc", "#aa6600"))
+        long = layered_hair(body, length=.85, root="#223344", tips=("#aabbcc", "#aa6600"))
+        lock = "cabello-largo-01"
+        self.assertGreater(long[lock].extents[1], short[lock].extents[1])
+        self.assertTrue(short[lock].is_volume and long[lock].is_volume)
+        self.assertEqual(tuple(short[lock].visual.material.baseColorTexture.getpixel((0, 0))), (34, 51, 68))
     def test_separate_sleeves_clear_body_in_two_poses(self):
         from kiria_dialog import apply_scene_plan, plan_scene_command
         body = nikix_preset(version=6)[BODY]

@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 
 from aethryx_anatomy import blocking_geometry_issues, load_body_template, validate_deformation
-from aethryx_anime import hair_locks, nikix_preset, sculpted_body, sculpted_face_parts
+from aethryx_anime import hair_locks, layered_hair, nikix_preset, sculpted_body, sculpted_face_parts
 from aethryx_bridge import inspect_avatar_glb
 from aethryx_materials import (CHANNELS, RESOLUTIONS, color_gradient, save_pbr_maps, transform_uv,
                               unwrap_uv, update_pbr_maps, uv_quality)
@@ -53,7 +53,8 @@ class ComponentDialog(tk.Toplevel):
              ("Degradado por pieza…", self.gradient), ("Calzado…", self.footwear)),
             (("Perfil anime…", self.create_profile), ("Párpados", self.eyelids), ("Interior bucal", self.mouth),
              ("Cabello por regiones…", self.hair_regions), ("Ocultar región corporal…", self.toggle_body_band)),
-            (("Cuerpo anime v2…", self.create_sculpted_body), ("Mechones independientes…", self.independent_hair)),
+            (("Cuerpo anime…", self.create_sculpted_body), ("Mechones independientes…", self.independent_hair),
+             ("Peinado por capas…", self.layered_hair)),
             (("Preset Nikix v3", lambda: self.create_nikix(3)), ("Preset Nikix v4", lambda: self.create_nikix(4)),
              ("Preset Nikix v5", lambda: self.create_nikix(5)), ("Preset Nikix v6", lambda: self.create_nikix(6)),
              ("Ajustar malla a pieza…", self.fit_generated)),
@@ -231,20 +232,41 @@ class ComponentDialog(tk.Toplevel):
             self._edit(lambda: self.avatar.add(BODY, anime_body("Anime " + profile.strip().lower())), BODY)
 
     def create_sculpted_body(self):
-        profile = simpledialog.askstring("Cuerpo anime v2", "Elige neutro, femenino o masculino.",
+        profile = simpledialog.askstring("Cuerpo anime editable", "Elige neutro, femenino o masculino.",
                                          initialvalue="femenino", parent=self)
         if profile is None:
             return
         def generate():
             if BODY in self.avatar.nodes:
                 raise ValueError("Abre una escena nueva para conservar el cuerpo base actual.")
-            body = sculpted_body("Anime " + profile.strip().lower())
+            body = sculpted_body("Anime " + profile.strip().lower(), refined=True, facial_loops=True)
             issues = blocking_geometry_issues(validate_deformation(body, body))
             if issues:
                 raise ValueError("\n".join(issues))
             self._group({BODY: body, **sculpted_face_parts(body)})
             return "Cuerpo con cabeza procedural, ojos, párpados, pestañas y cejas."
         self._edit_background(generate, BODY)
+
+    def layered_hair(self):
+        length = simpledialog.askfloat("Peinado por capas", "Longitud posterior entre 0 y 1.", initialvalue=.60,
+                                       minvalue=0, maxvalue=1, parent=self)
+        if length is None:
+            return
+        colors = []
+        for title, initial in (("Raíces", "#efb94f"), ("Puntas de un lado", "#ff508f"),
+                               ("Puntas del otro lado", "#32c6f5")):
+            _, color = colorchooser.askcolor(color=initial, title=title, parent=self)
+            if not color:
+                return
+            colors.append(color)
+
+        def generate():
+            pieces = layered_hair(self._body(), length=length, root=colors[0], tips=colors[1:])
+            old = {name for name in self.avatar.nodes if name.startswith("cabello")}
+            self._group(pieces, old - pieces.keys())
+            return "Peinado por capas creado en piezas independientes."
+
+        self._edit_background(generate, "cabello-fondo")
 
     def independent_hair(self):
         length = simpledialog.askfloat(

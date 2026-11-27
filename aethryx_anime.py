@@ -201,17 +201,21 @@ def sculpted_face_parts(body, colors=("#6589d4", "#ae6798")):
     return parts
 
 
-def nikix_hair(body, *, ribbons=False):
+def layered_hair(body, *, ribbons=True, length=.60, root=None, tips=None):
     """Original swept locks with separate textures and UVs following their lengths."""
+    if not 0 <= length <= 1:
+        raise ValueError("La longitud del cabello debe estar entre 0 y 1.")
     height = body.extents[1]
     cx, _, cz, _ = body.metadata["aethryx_eye_guide"]
     crown = body.bounds[1, 1]
-    root = "#efb94f" if ribbons else "#e8b86c"
-    parts = {"cabello-fondo": fit_hair(body, length=.58 if ribbons else .36, volume=.022, color=root)}
+    root = root or ("#efb94f" if ribbons else "#e8b86c")
+    tips = tips or (("#ff508f", "#32c6f5") if ribbons else ("#f19abc", "#8ccee9"))
+    cap_length = (.58 if ribbons else .36) * (.5 + length / 1.2)
+    parts = {"cabello-fondo": fit_hair(body, length=cap_length, volume=.022, color=root)}
     t = np.linspace(0., 1., 36)
     for index, angle in enumerate(np.linspace(-np.pi, np.pi, 20, endpoint=False)):
         front = np.cos(angle) > .48
-        tip = "#f19abc" if np.sin(angle) < 0 else "#8ccee9"
+        tip = tips[0 if np.sin(angle) < 0 else 1]
         radial = (.012 + .068 * np.sin(np.pi * .60 * t)) * height
         x = cx + np.sin(angle + .24 * t) * radial
         if front:
@@ -220,12 +224,11 @@ def nikix_hair(body, *, ribbons=False):
             z = cz - .045 * height + np.cos(angle) * radial + .047 * height * t
         else:
             x += height * np.sin(angle) * (.035 * t**2 + .010 * np.sin(np.pi * 2 * t) * t)
-            y = crown + height * (.006 - (.35 + .024 * np.sin(index * 2)) * t**1.35)
+            y = crown + height * (.006 - (.14 + .35 * length + .024 * np.sin(index * 2)) * t**1.35)
             z = cz - .044 * height + np.cos(angle) * radial - .042 * height * t
         radii = height * (.003 + .010 * np.sin(np.pi * t)**.55) * (1 - .86 * t**5)
         sides = 10
         if ribbons:
-            tip = "#ff508f" if np.sin(angle) < 0 else "#32c6f5"
             wave = t**1.4 * np.sin(t * np.pi * 2 + index * .6)
             x += height * (.017 if front else .032) * wave
             z += height * (.004 if front else .019) * wave
@@ -241,6 +244,10 @@ def nikix_hair(body, *, ribbons=False):
         zone = "flequillo" if front else "largo"
         parts[f"cabello-{zone}-{index + 1:02}"] = mesh
     return parts
+
+
+def nikix_hair(body, *, ribbons=False):
+    return layered_hair(body, ribbons=ribbons)
 
 
 def _nikix_jewelry(body):
