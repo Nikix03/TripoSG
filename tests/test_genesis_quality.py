@@ -11,7 +11,8 @@ from aethryx_anime import hair_locks, nikix_preset, sculpted_body, sculpted_face
 from aethryx_bridge import inspect_avatar_glb
 from aethryx_modular import BODY, EYES, anime_body, avatar_eye, body_contacts
 from aethryx_rig import PosePreview, export_rigged_avatar
-from aethryx_reference import AnimeSilhouette, profile_opposite
+from aethryx_reference import (AnimeSilhouette, SEE_THROUGH_COLORS, import_see_through_v2,
+                               profile_opposite, semantic_reference_regions)
 from kiria_dialog import apply_scene_plan, plan_scene_command
 from studio_project import load_project, save_project, unsaved_recovery_path, validate_glb
 
@@ -80,6 +81,25 @@ class GenesisQualityTests(unittest.TestCase):
         self.assertEqual(provider.session.input_shape, (1, 3, 1024, 1024))
         self.assertEqual(mask.size, image.size)
         self.assertEqual(mask.getbbox(), (22, 40, 58, 120))
+
+    def test_see_through_eyes_and_transparent_crops(self):
+        from PIL import Image
+        from scripts.evaluate_anime_mask import evaluate
+
+        layers = np.zeros((19, 6, 8), dtype=bool)
+        layers[2, 1:5, 1:7] = True
+        layers[3, 2, [2, 5]] = True
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "v2.npy"
+            np.save(path, layers)
+            mask = import_see_through_v2(path, (8, 6), include_eyes=True)
+        self.assertEqual(mask.getpixel((2, 2)), SEE_THROUGH_COLORS["eyes"])
+        regions = semantic_reference_regions(Image.new("RGB", (8, 6), "#b77890"), mask)
+        self.assertEqual(regions["eyes"]["color"], "#b77890")
+        self.assertEqual(regions["eyes"]["bounds"], (2, 2, 6, 3))
+        self.assertEqual(regions["eyes"]["crop"].getpixel((1, 0))[3], 0)
+        report = evaluate(mask, {"eyes": [[2, 2, 3, 3]], "face": [[3, 2, 4, 3]]})
+        self.assertEqual(report["accuracy"], 1.)
 
     def test_new_head_is_welded_and_face_geometry_is_modular(self):
         body = self.body

@@ -67,7 +67,7 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
     if len(np.unique(anchors, axis=0)) != len(anchors):
         raise ValueError("Los puntos de control deben ocupar posiciones distintas.")
 
-    matrices, offsets, observations, masks, visibility = [], [], [], [], []
+    matrices, offsets, observations, masks, visibility, reference_colors = [], [], [], [], [], []
     if set(data["views"]) != set(VIEWS):
         raise ValueError("Define exactamente las vistas front, side y back.")
     for name in VIEWS:
@@ -76,6 +76,7 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
         points = np.asarray(view["landmarks"], dtype=float)
         with Image.open(root / view["image"]) as image:
             width, height = image.size
+            reference_colors.append(np.asarray(image.convert("RGB")) if view.get("mask") else None)
         if projection.shape != (2, 4) or points.shape != (len(ids), 2):
             raise ValueError(f"Calibración o puntos inválidos en {name}.")
         visible = np.isfinite(points).all(axis=1)
@@ -125,7 +126,8 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
             VIEWS, matrices, offsets, observations, visibility,
         )
     }
-    patches = partition_surfaces(mesh, matrices, offsets, masks, data.get("palette", {}))
+    patches = partition_surfaces(mesh, matrices, offsets, masks, data.get("palette", {}),
+                                 reference_colors=reference_colors)
     proportions = data.get("proportions", {})
     if proportions:
         bounds = mesh.bounds.copy()
@@ -315,7 +317,7 @@ def _unoccluded_faces(locator, centers, indices, direction, span, tolerance):
     return np.asarray(visible, dtype=int)
 
 
-def partition_surfaces(mesh, matrices, offsets, masks, palette):
+def partition_surfaces(mesh, matrices, offsets, masks, palette, *, reference_colors=None):
     """Partition triangles using agreeing samples visible in the labeled views."""
     centers = mesh.triangles_center
     labels = np.zeros(len(centers), dtype=int)
@@ -342,8 +344,12 @@ def partition_surfaces(mesh, matrices, offsets, masks, palette):
     locator.BuildLocator()
     span = max(float(mesh.scale) * 2, 1e-9)
     tolerance = span * 1e-8
+    color_sum = np.zeros((len(centers), 3))
+    color_weight = np.zeros(len(centers))
+    if reference_colors is None:
+        reference_colors = [None] * len(masks)
 
-    for matrix, offset, mask in zip(matrices, offsets, masks):
+    for matrix, offset, mask, reference in zip(matrices, offsets, masks, reference_colors):
         if mask is None:
             continue
         pixels = np.floor(centers @ matrix.T + offset).astype(int)
@@ -351,7 +357,8 @@ def partition_surfaces(mesh, matrices, offsets, masks, palette):
         # Pixel Y points down. The negative cross product points toward the camera.
         direction = -np.cross(*matrix)
         direction = direction / np.linalg.norm(direction)
-        front = mesh.face_normals @ direction > 1e-8
+        facing = mesh.face_normals @ direction
+        front = facing > 1e-8
         visible = front & (x >= 0) & (y >= 0) & (x < mask.shape[1]) & (y < mask.shape[0])
         indices = np.flatnonzero(visible)
         sampled = mask[y[indices], x[indices]]
@@ -360,12 +367,22 @@ def partition_surfaces(mesh, matrices, offsets, masks, palette):
             matched = _unoccluded_faces(locator, centers, candidates, direction, span, tolerance)
             ambiguous[matched] |= (labels[matched] != 0) & (labels[matched] != label)
             labels[matched] = label
+            if reference is not None:
+                confidence = facing[matched] ** 2
+                color_sum[matched] += reference[y[matched], x[matched]] * confidence[:, None]
+                color_weight[matched] += confidence
     labels[ambiguous] = 0
     scene = trimesh.Scene()
     for label, name in enumerate(["sin-asignar", *names]):
         faces = np.flatnonzero(labels == label)
         if len(faces):
             piece = mesh.submesh([faces], repair=False)[0]
+            if label and np.any(color_weight[faces]):
+                projected = np.asarray(piece.visual.face_colors).copy()
+                known = color_weight[faces] > 0
+                selected = faces[known]
+                projected[known, :3] = np.rint(color_sum[selected] / color_weight[selected, None]).astype(np.uint8)
+                piece.visual.face_colors = projected
             scene.add_geometry(piece, node_name=name, geom_name=name)
     return scene
 

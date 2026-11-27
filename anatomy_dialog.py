@@ -4,7 +4,8 @@ from copy import deepcopy
 import json
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Thread
+import sys
+from threading import Event, Thread
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -19,9 +20,9 @@ from aethryx_anatomy import (
 from aethryx_engines import suggest_anatomical_points
 from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
 from aethryx_reference import (
-    AnimeSilhouette, SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, profile_opposite,
+    AnimeSilhouette, SEE_THROUGH_COLORS, SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, profile_opposite,
     reference_silhouette, segment_anime_reference,
-    silhouette_calibration,
+    segment_see_through_v2, semantic_reference_regions, silhouette_calibration,
 )
 from proportion_dialog import ProportionDialog
 
@@ -61,6 +62,8 @@ class AnatomyDialog(tk.Toplevel):
         self.comparisons = {}
         self.comparison_mode = tk.BooleanVar(value=False)
         self.segmenter = None
+        self.see_through = None
+        self.segment_cancel = Event()
         self.next_calibration = None
         self.busy = False
         self.photo = {}
@@ -117,6 +120,8 @@ class AnatomyDialog(tk.Toplevel):
         ttk.Button(views, text="Alinear y detectar vistas", command=self._auto_align).pack(side="left", padx=6)
         ttk.Button(views, text="Alinear con ISNet", command=lambda: self._auto_align(use_isnet=True)).pack(side="left")
         ttk.Button(views, text="Importar See-through V2…", command=self._import_see_through).pack(side="left")
+        ttk.Button(views, text="Ejecutar See-through…", command=self._run_see_through).pack(side="left")
+        ttk.Button(views, text="Cancelar segmentación", command=self.segment_cancel.set).pack(side="left")
 
         panels = ttk.Panedwindow(self, orient="horizontal")
         panels.pack(fill="both", expand=True, padx=8)
@@ -278,11 +283,31 @@ class AnatomyDialog(tk.Toplevel):
         if path:
             self._segment_current(external=path)
 
-    def _segment_current(self, external=None):
+    def _run_see_through(self):
+        if self.busy or self.view not in self.images:
+            return
+        if self.see_through is None:
+            source = filedialog.askdirectory(parent=self, title="Código fuente oficial de See-through")
+            if not source:
+                return
+            weights = filedialog.askopenfilename(parent=self, title="Checkpoint V2 oficial",
+                                                 filetypes=[("Pesos V2", "*.pt")])
+            if not weights:
+                return
+            python = filedialog.askopenfilename(parent=self, title="Python con PyTorch y CUDA",
+                                                initialdir=str(Path(sys.executable).parent),
+                                                filetypes=[("Python", "python.exe")])
+            if not python:
+                return
+            self.see_through = python, source, weights
+        self.segment_cancel.clear()
+        self._segment_current(run_see_through=True)
+
+    def _segment_current(self, external=None, *, run_see_through=False):
         view = self.view
         if self.busy or view not in self.images:
             return
-        if external is None and self.segmenter is None:
+        if external is None and not run_see_through and self.segmenter is None:
             model = filedialog.askopenfilename(parent=self, filetypes=[("ONNX multiclase", "*.onnx")])
             if not model:
                 return
@@ -294,7 +319,11 @@ class AnatomyDialog(tk.Toplevel):
                 return
             self.segmenter = model, [label.strip().lower() for label in raw.split(",")]
         image = self.images[view]
+        colors = SEE_THROUGH_COLORS if external or run_see_through else SEMANTIC_COLORS
         def accept(mask):
+            if mask is None:
+                self.status.set("Segmentación cancelada.")
+                return
             self.status.set(f"Máscara propuesta para {VIEW_LABELS[view]}.")
             preview = tk.Toplevel(self)
             preview.title("Revisar segmentación multiclase")
@@ -305,14 +334,37 @@ class AnatomyDialog(tk.Toplevel):
             photo = ImageTk.PhotoImage(scaled)
             label = ttk.Label(preview, image=photo)
             label.pack(padx=8, pady=8)
+            regions = semantic_reference_regions(image, mask, colors)
             legend = ttk.Frame(preview)
             legend.pack()
-            for key, caption in zip(SEMANTIC_COLORS, ("Fondo", "Cuerpo", "Rostro", "Cabello", "Ropa", "Accesorios")):
+            for key, caption in zip(colors, ("Fondo", "Cuello", "Rostro", "Cabello", "Ropa", "Accesorios", "Ojos")):
                 if key != "background":
-                    color = "#%02x%02x%02x" % SEMANTIC_COLORS[key]
+                    color = "#%02x%02x%02x" % colors[key]
+                    if key == "body" and colors is SEMANTIC_COLORS:
+                        caption = "Cuerpo"
+                    if key in regions:
+                        caption += f" {regions[key]['color']}"
                     tk.Label(legend, text=caption, bg=color, fg="#11141b", padx=6).pack(side="left")
+            def export_crops():
+                directory = filedialog.askdirectory(parent=preview)
+                if not directory:
+                    return
+                from tempfile import mkdtemp
+                folder = Path(mkdtemp(prefix="recortes-", dir=directory))
+                try:
+                    for name, region in regions.items():
+                        region["crop"].save(folder / f"{name}.png")
+                    (folder / "regiones.json").write_text(json.dumps({
+                        name: {key: value for key, value in region.items() if key != "crop"}
+                        for name, region in regions.items()
+                    }, indent=2), encoding="utf-8")
+                    self.status.set(f"Recortes transparentes guardados en {folder.name}.")
+                except OSError as exc:
+                    self._error(exc)
+            ttk.Button(preview, text="Exportar recortes transparentes…", command=export_crops,
+                       state="normal" if regions else "disabled").pack(pady=4)
             def save():
-                palette = {name: list(color) for name, color in SEMANTIC_COLORS.items() if name != "background"}
+                palette = {name: list(color) for name, color in colors.items() if name != "background"}
                 used = {tuple(color): name for name, color in palette.items()}
                 if any((name in palette and tuple(color) != tuple(palette[name]))
                        or (tuple(color) in used and used[tuple(color)] != name)
@@ -341,7 +393,14 @@ class AnatomyDialog(tk.Toplevel):
             self.grab_set()
         if external is not None:
             self._work("Leyendo las máscaras externas de See-through V2…",
-                       lambda: import_see_through_v2(external, image.size), accept)
+                       lambda: import_see_through_v2(external, image.size, include_eyes=True), accept)
+            return
+        if run_see_through:
+            path = self.views[view]["image"]
+            resolution = image.size
+            self._work("Segmentando en CUDA con See-through…",
+                       lambda: segment_see_through_v2(path, resolution, *self.see_through,
+                                                      cancelled=self.segment_cancel), accept)
             return
         model, labels = self.segmenter
         # Prompt again on the next request if the selected provider fails.

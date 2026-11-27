@@ -83,9 +83,11 @@ class ReconstructionTests(unittest.TestCase):
         scene = partition_surfaces(
             planes, [np.array([[1, 0, 0], [0, -1, 0]])], [np.array([1, 1])],
             [np.tile([255, 0, 0], (3, 3, 1))], {"visible": [255, 0, 0]},
+            reference_colors=[np.tile([13, 122, 230], (3, 3, 1))],
         )
         np.testing.assert_array_equal(scene.geometry["visible"].vertices[:, 2], np.ones(3))
         np.testing.assert_array_equal(scene.geometry["sin-asignar"].vertices[:, 2], np.zeros(3))
+        np.testing.assert_array_equal(scene.geometry["visible"].visual.face_colors[0, :3], [13, 122, 230])
 
     def test_three_calibrated_views_fit_depth_and_split_connected_surface(self):
         with tempfile.TemporaryDirectory() as folder:

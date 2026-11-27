@@ -1,0 +1,14 @@
+{
+  "image": "authorized-anime-799906.jpg",
+  "coordinates": "Rectangles [left, top, right, bottom], right and bottom exclusive",
+  "scope": "Sparse manually marked interior samples. Unmarked pixels are ignored.",
+  "regions": {
+    "background": [[126,110,151,131], [251,118,289,143], [186,275,215,298]],
+    "body": [[415,564,462,613], [589,353,608,387], [383,394,408,410]],
+    "face": [[450,272,473,283], [468,294,482,305]],
+    "eyes": [[421,235,433,246], [494,227,502,239]],
+    "hair": [[444,128,481,153], [573,124,600,151], [365,225,380,255]],
+    "clothing": [[490,390,517,413], [583,715,604,735], [323,775,348,800]],
+    "accessories": [[713,669,739,690], [99,454,121,475]]
+  }
+}

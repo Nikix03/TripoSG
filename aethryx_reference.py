@@ -1,6 +1,8 @@
 """Silhouettes and local multiclass masks for the Genesis reference views."""
 
 from pathlib import Path
+import subprocess
+from tempfile import TemporaryDirectory
 
 import cv2
 import numpy as np
@@ -13,6 +15,7 @@ SEMANTIC_COLORS = {
 }
 
 ISNET_MODEL = Path(__file__).resolve().parent / "models" / "anime" / "isnetis.onnx"
+SEE_THROUGH_COLORS = {**SEMANTIC_COLORS, "eyes": (244, 219, 85)}
 
 
 class AnimeSilhouette:
@@ -50,7 +53,7 @@ class AnimeSilhouette:
         return Image.fromarray(np.uint8(foreground >= .5) * 255)
 
 
-def import_see_through_v2(path, size):
+def import_see_through_v2(path, size, *, include_eyes=False):
     """Collapse externally inferred 19-layer V2 masks to visible semantic classes."""
     width, height = size
     masks = np.load(path, mmap_mode="r", allow_pickle=False)
@@ -60,13 +63,67 @@ def import_see_through_v2(path, size):
         ("body", (9,)), ("face", (2, 3, 5, 7, 8)), ("clothing", (11, 12, 13, 14, 15)),
         ("hair", (0,)), ("accessories", (1, 4, 6, 10, 16, 17, 18)),
     )
+    palette = SEE_THROUGH_COLORS if include_eyes else SEMANTIC_COLORS
+    if include_eyes:
+        categories = (*categories[:2], ("eyes", (3,)), *categories[2:])
     rgb = np.zeros((height, width, 3), dtype=np.uint8)
     for label, indices in categories:
         foreground = np.zeros((height, width), dtype=bool)
         for index in indices:
             foreground |= masks[index]
-        rgb[foreground] = SEMANTIC_COLORS[label]
+        rgb[foreground] = palette[label]
     return Image.fromarray(rgb)
+
+
+def segment_see_through_v2(image_path, size, python, source, checkpoint, *, cancelled):
+    worker = Path(__file__).resolve().parent / "scripts" / "segment_see_through.py"
+    with TemporaryDirectory(prefix="aethryx-segment-") as folder:
+        output = Path(folder) / "parts.npy"
+        args = [python, str(worker), source, checkpoint, image_path, str(output)]
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                              encoding="utf-8", errors="replace", creationflags=flags) as child:
+            while True:
+                if cancelled.is_set():
+                    child.kill()
+                    child.communicate()
+                    return None
+                try:
+                    _, error = child.communicate(timeout=.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            if child.returncode:
+                raise RuntimeError(error.strip()[-1200:] or f"See-through terminó con código {child.returncode}.")
+        if cancelled.is_set():
+            return None
+        return import_see_through_v2(output, size, include_eyes=True)
+
+
+def semantic_reference_regions(image, mask, colors=SEE_THROUGH_COLORS):
+    """Summarize observed pixels and produce transparent per-class crops."""
+    if image.size != mask.size:
+        raise ValueError("La máscara semántica debe coincidir con la referencia.")
+    source = np.asarray(image.convert("RGBA"))
+    labels = np.asarray(mask.convert("RGB"))
+    regions = {}
+    for name, color in colors.items():
+        if name == "background":
+            continue
+        selection = np.all(labels == color, axis=2) & (source[:, :, 3] >= 128)
+        y, x = np.where(selection)
+        if not len(x):
+            continue
+        bounds = (int(x.min()), int(y.min()), int(x.max()) + 1, int(y.max()) + 1)
+        x0, y0, x1, y1 = bounds
+        crop = source[y0:y1, x0:x1].copy()
+        crop[~selection[y0:y1, x0:x1]] = 0
+        median = np.rint(np.median(source[selection, :3], axis=0)).astype(np.uint8)
+        regions[name] = {
+            "bounds": bounds, "pixels": len(x), "color": "#%02x%02x%02x" % tuple(median),
+            "crop": Image.fromarray(crop),
+        }
+    return regions
 
 
 def reference_silhouette(image, semantic_mask=None):

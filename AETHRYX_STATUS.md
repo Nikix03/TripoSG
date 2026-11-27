@@ -1,5 +1,14 @@
 # Estado de AETHRYX Studio
 
+## Genesis Evolution · Visión y transferencia de color
+
+- Inicio limpio en `bbd26c0`. **Reconstrucción anatómica → Ejecutar See-through** usa el parser SAM-HQ V2 oficial desde un proceso separado. Se seleccionan el código, el checkpoint local y el Python CUDA. Se verificó el recorrido real y la cancelación. El modelo conserva los ojos como clase independiente. Su clase corporal nativa corresponde al cuello. Se mantienen separadas la máscara de cuerpo completo y la segmentación visible.
+- Windows, RTX 5070, PyTorch 2.11.0+cu128, checkpoint oficial Apache-2.0 y referencia autorizada de Phase 4 de 800 × 1.081. Dos calentamientos y cinco inferencias precargadas dieron mediana 205,94 ms, rango 200,99–213,31 ms y pico asignado de 2.360,55 MiB, con 2.660 MiB reservados por PyTorch. ISNet binario con el mismo protocolo dio medianas de 46,09 ms en CUDA y 1,60 s en CPU. Se mantuvo intacto el entorno. [Modelo de See-through](https://huggingface.co/24yearsold/l2d_sam_iter2) · [Máscara obtenida](test_assets/anime/genesis-phase4/reference/see-through-v2-mask.png)
+- Evaluación sobre 10.904 píxeles anotados manualmente en rectángulos interiores de una imagen. Exactitud 56,19 %. IoU sobre la zona anotada de 100 % para cabello, rostro y ojos, 68,92 % para fondo, 22,75 % para ropa y 0 % para cuerpo y accesorios. Las zonas sin anotación se excluyen. Este ensayo no mide bordes, otros personajes ni fidelidad multivista. [Anotaciones](test_assets/anime/genesis-phase4/reference/annotations-799906.json)
+- La vista de máscara presenta color mediano por clase y exporta recortes PNG con transparencia, coordenadas y área. Genesis proyecta color de referencias calibradas en parches semánticos visibles, ponderado por orientación y con exclusión de caras ocluidas o clases ambiguas. La malla base completa se conserva. La transferencia es por cara y el ensayo de oclusión es controlado. Sigue pendiente generar y ajustar geometría TripoSG desde los recortes.
+- Pasaron 78 pruebas. Quedan pendientes la calibración con referencias originales de Nikix y las mejoras de precisión corporal y de accesorios.
+
+
 ## Project Nikix · Preset v3, silueta anime y Unity
 
 - La rama arrancó limpia desde `d73d540`. **Escena → Administrador de componentes → Preset Nikix v3** crea 41 piezas. El cuerpo deriva de la plantilla CC0 registrada en NOTICE. El iris, cabello, joyería y acabados del preset son procedurales. El preset adulto femenino incluye iris rosa y celeste, flequillo y mechones rubios con puntas independientes, orejas humanas, vestido, calzado, collar Árbol de la Vida y aros Mano de Hamsa. La revisión artística frente a las referencias originales de Nikix sigue pendiente. [Cuatro vistas](test_assets/anime/project-nikix/nikix-v3-review.png) · [Comparación v2 y v3](test_assets/anime/project-nikix/comparacion-v2-v3.png)
