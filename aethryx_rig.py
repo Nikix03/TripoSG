@@ -123,7 +123,7 @@ def _rig_attachment(name, mesh):
     footwear = {"prenda-zapato-izquierdo": "LeftFoot", "prenda-zapato-derecho": "RightFoot"}
     if name in footwear and mesh.metadata.get("aethryx_footwear"):
         return footwear[name]
-    if name.startswith(("cabello", "boca-", "dientes-", "lengua", *EYES)):
+    if name.startswith(("cabello", "boca-", "dientes-", "lengua", "oreja-", "accesorio-hamsa-", *EYES)):
         return "Head"
     return None
 
@@ -286,7 +286,7 @@ def export_rigged_avatar(scene, path, influences=4):
     body_joints, body_weights = skin_weights(np.asarray(body.vertices), skeleton, influences)
     tree = cKDTree(body.vertices)
     facial = facial_morphs(body)
-    glb = _GlbBuffers(trimesh.Scene(parts).export(file_type="glb"))
+    glb = _GlbBuffers(trimesh.Scene(parts).export(file_type="glb", include_normals=True))
     data = glb.document
     nodes = data["nodes"]
     joint_start = len(nodes)

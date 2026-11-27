@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 
 from aethryx_anatomy import blocking_geometry_issues, validate_deformation
-from aethryx_anime import hair_locks, sculpted_body, sculpted_face_parts
+from aethryx_anime import hair_locks, nikix_preset, sculpted_body, sculpted_face_parts
 from aethryx_bridge import inspect_avatar_glb
 from aethryx_materials import CHANNELS, RESOLUTIONS, color_gradient, save_pbr_maps, transform_uv, update_pbr_maps, uv_quality
 from aethryx_rig import export_rigged_avatar, preview_expression, preview_pose
@@ -52,6 +52,7 @@ class ComponentDialog(tk.Toplevel):
             (("Perfil anime…", self.create_profile), ("Párpados", self.eyelids), ("Interior bucal", self.mouth),
              ("Cabello por regiones…", self.hair_regions), ("Ocultar región corporal…", self.toggle_body_band)),
             (("Cuerpo anime v2…", self.create_sculpted_body), ("Mechones independientes…", self.independent_hair)),
+            (("Preset Nikix v3", self.create_nikix),),
             (("Mapas PBR…", self.pbr), ("Diagnóstico UV…", self.diagnose_uv), ("Ajustar UV…", self.edit_uv),
              ("Guardar conjunto…", self.save_outfit), ("Abrir conjunto…", self.load_outfit)),
             (("Exportar rig GLB…", self.export_rig), ("Guardar pose de prueba…", self.export_pose),
@@ -233,6 +234,19 @@ class ComponentDialog(tk.Toplevel):
                 self._group(pieces, old_hair - pieces.keys())
             self._edit(generate)
 
+    def create_nikix(self):
+        def generate():
+            if self.avatar.nodes:
+                raise ValueError("Abre una escena vacía para generar el preset completo.")
+            parts = nikix_preset()
+            issues = blocking_geometry_issues(validate_deformation(parts[BODY], parts[BODY]))
+            if issues:
+                raise ValueError("\n".join(issues))
+            self._group(parts)
+            return "Preset procedural Nikix v3 generado con prendas y accesorios independientes."
+
+        self._edit_background(generate, BODY)
+
     def _group(self, pieces, hide=()):
         working = ModularAvatar(self.avatar.scene, self.avatar.hidden)
         for name, piece in pieces.items():
@@ -307,10 +321,14 @@ class ComponentDialog(tk.Toplevel):
                 eye = working.get(node)
                 previous = eye.bounds.mean(axis=0)
                 world_center = transform[:3, :3] @ previous + transform[:3, 3]
-                eye.vertices = previous + (eye.vertices - previous) * factors["eye_size"]
                 dx = (world_center[0] - center) * (factors["eye_spacing"] - 1)
-                eye.apply_translation(np.linalg.solve(transform[:3, :3], [dx, 0, 0]))
-                working.replace(node, eye)
+                for part in (name for name in working.nodes if name == node or name.startswith(node + "-")):
+                    matrix, _ = working.scene.graph[part]
+                    component = working.get(part)
+                    pivot = np.linalg.solve(matrix[:3, :3], world_center - matrix[:3, 3])
+                    delta = np.linalg.solve(matrix[:3, :3], [dx, 0, 0])
+                    component.vertices = pivot + (component.vertices - pivot) * factors["eye_size"] + delta
+                    working.replace(part, component)
             self.avatar = working
         self._edit_background(update, BODY)
 

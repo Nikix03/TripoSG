@@ -18,7 +18,7 @@ def render_review(source, output, *, toon=False):
         ("Frontal", center, [0, 0, 1], .57),
         ("Lateral", center, [1, 0, 0], .57),
         ("Posterior", center, [0, 0, -1], .57),
-        ("Rostro", closeup, [0, 0, 1], .112),
+        ("Rostro", closeup + [0, .018 * height, 0], [0, 0, 1], .134),
     )
     size = (430, 540)
     board = Image.new("RGB", (2 * size[0], 2 * size[1]), "#121621")
@@ -43,7 +43,10 @@ def render_review(source, output, *, toon=False):
                     if toon and factor is not None:
                         light = np.array([-.32, .64, .70])
                         power = mesh.vertex_normals @ (light / np.linalg.norm(light))
-                        bands = np.select((power > .55, power > .13), (1., .83), default=.64)
+                        def smooth(edge):
+                            blend = np.clip((power - edge + .075) / .15, 0, 1)
+                            return blend**2 * (3 - 2 * blend)
+                        bands = .64 + .19 * smooth(.13) + .17 * smooth(.55)
                         poly.point_data["toon_rgb"] = np.rint(bands[:, None] * factor[:3]).astype(np.uint8)
                         plotter.add_mesh(poly, scalars="toon_rgb", rgb=True, lighting=False)
                     else:

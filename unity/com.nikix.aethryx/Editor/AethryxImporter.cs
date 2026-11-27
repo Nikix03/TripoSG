@@ -177,6 +177,7 @@ namespace Nikix.Aethryx
                             bind[i][row, col] = file.Float(skin.inverseBindMatrices, i, col * 4 + row, 16)
                                 * ((row == 2) != (col == 2) ? -1 : 1);
                 var materials = (doc.materials ?? new MaterialDef[0]).Select((m, i) => BuildMaterial(file, m, folder, i)).ToArray();
+                Material fallbackMaterial = null;
                 for (int i = 0; i < doc.nodes.Length; i++)
                 {
                     var node = doc.nodes[i];
@@ -197,7 +198,14 @@ namespace Nikix.Aethryx
                         renderer.sharedMesh = mesh;
                         renderer.bones = skin.joints.Select(joint => transforms[joint]).ToArray();
                         renderer.rootBone = transforms[skin.skeleton];
-                        if (primitive.material >= 0) renderer.sharedMaterial = materials[primitive.material];
+                        if (primitive.material >= 0)
+                            renderer.sharedMaterial = materials[primitive.material];
+                        else
+                        {
+                            if (fallbackMaterial == null)
+                                fallbackMaterial = BuildMaterial(file, new MaterialDef(), folder, materials.Length);
+                            renderer.sharedMaterial = fallbackMaterial;
+                        }
                     }
                 }
                 var human = BuildHumanoid(root, transforms, skin);

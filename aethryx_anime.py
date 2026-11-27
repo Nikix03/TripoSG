@@ -5,7 +5,8 @@ from scipy.spatial import cKDTree
 import trimesh
 
 from aethryx_materials import color_gradient
-from aethryx_modular import EYES, _iris, anime_body, apply_material, fit_hair, fitted_eyelids
+from aethryx_modular import (BODY, EYES, _iris, anime_body, apply_material, fit_garment_with_clearance,
+                           fit_hair, fitted_eyelids, fit_footwear)
 
 
 def _neck_loop(mesh):
@@ -27,7 +28,7 @@ def _neck_loop(mesh):
     return np.asarray(loop)
 
 
-def sculpted_body(profile="Anime neutro"):
+def sculpted_body(profile="Anime neutro", *, refined=False):
     """Replace the upper topology and weld the procedural head to the preserved torso."""
     original = anime_body(profile)
     lower, upper = original.bounds
@@ -46,6 +47,9 @@ def sculpted_body(profile="Anime neutro"):
     intervals = np.array([0, .10, .19, .27, .43, .58, .73, .86, .94, 1])
     rx = [0, .029, .033, .045, .063, .073, .073, .068, .053, 0]
     rz = [0, .026, .034, .042, .052, .056, .059, .057, .047, 0]
+    if refined:
+        rx = [0, .029, .035, .048, .064, .071, .072, .069, .054, 0]
+        rz = [0, .026, .035, .043, .053, .058, .062, .059, .048, 0]
     span = height * (.199 if profile == "Anime femenino" else .194)
     layers = np.linspace(0, 1, 35)[1:-1]
     loops = [join]
@@ -64,6 +68,10 @@ def sculpted_body(profile="Anime neutro"):
         lips = np.exp(-(u / .023)**2 - ((y - .325) / .023)**2) * .005
         cheek = np.exp(-((abs(u) - .043) / .018)**2 - ((y - .445) / .11)**2) * .008
         socket = np.exp(-((abs(u) - .030) / .025)**4 - ((y - .575) / .085)**2) * .017
+        if refined:
+            nose *= .80
+            lips *= .75
+            cheek *= .75
         z += (nose + lips + cheek - socket) * height * forward**3
         # Retain the precise neck seam while distributing the new head's vertices.
         blend = np.clip(y / .14, 0, 1)
@@ -89,7 +97,7 @@ def sculpted_body(profile="Anime neutro"):
     if not result.is_volume or np.any(result.area_faces <= 1e-12):
         raise ValueError("La nueva cabeza no produjo un cuerpo cerrado y orientado.")
     result.metadata.update(
-        aethryx_style="genesis-anime-v2",
+        aethryx_style="genesis-anime-v3" if refined else "genesis-anime-v2",
         aethryx_profile=profile,
         aethryx_eye_guide=[float(center[0]), float(neck_y + .575 * span), front_z, float(height)],
         aethryx_face_levels={name: float(neck_y + t * span)
@@ -98,8 +106,8 @@ def sculpted_body(profile="Anime neutro"):
     return apply_material(result, "#efbdab", projection="cylindrical")
 
 
-def _sweep(points, radii, sides=10):
-    tangent = np.gradient(points, axis=0)
+def _sweep(points, radii, sides=10, *, closed=False):
+    tangent = np.roll(points, -1, axis=0) - np.roll(points, 1, axis=0) if closed else np.gradient(points, axis=0)
     tangent /= np.linalg.norm(tangent, axis=1, keepdims=True)
     reference = np.tile([0., 0., 1.], (len(points), 1))
     reference[np.abs(tangent[:, 2]) > .95] = [0, 1, 0]
@@ -114,14 +122,18 @@ def _sweep(points, radii, sides=10):
     j = np.arange(sides)
     following = np.roll(j, -1)
     faces = []
-    for offset in range(0, (len(points) - 1) * sides, sides):
-        faces.extend((np.column_stack((j, following, j + sides)) + offset,
-                      np.column_stack((following, following + sides, j + sides)) + offset))
-    last = (len(points) - 1) * sides
-    faces.extend((np.column_stack((j, following, np.full(sides, len(points) * sides))),
-                  np.column_stack((last + j, last + following, np.full(sides, len(points) * sides + 1)))))
-    mesh = trimesh.Trimesh(vertices=np.vstack((rings.reshape(-1, 3), points[[0, -1]])),
-                           faces=np.vstack(faces), process=False)
+    count = len(points) * sides
+    for offset in range(0, count if closed else count - sides, sides):
+        adjacent = (offset + sides) % count
+        faces.extend((np.column_stack((j + offset, following + offset, j + adjacent)),
+                      np.column_stack((following + offset, following + adjacent, j + adjacent))))
+    vertices = rings.reshape(-1, 3)
+    if not closed:
+        last = count - sides
+        faces.extend((np.column_stack((j, following, np.full(sides, count))),
+                      np.column_stack((last + j, last + following, np.full(sides, count + 1)))))
+        vertices = np.vstack((vertices, points[[0, -1]]))
+    mesh = trimesh.Trimesh(vertices=vertices, faces=np.vstack(faces), process=False)
     mesh.fix_normals()
     return mesh
 
@@ -131,14 +143,18 @@ def sculpted_face_parts(body, colors=("#6589d4", "#ae6798")):
     if not guide or len(guide) != 4:
         raise ValueError("Crea primero un cuerpo anime v2.")
     cx, cy, cz, height = guide
+    refined = body.metadata.get("aethryx_style") == "genesis-anime-v3"
     parts = {}
     t = np.linspace(-1, 1, 25)
     for name, side, color in zip(EYES, (1, -1), colors):
         center = np.array([cx + side * .030 * height, cy, cz - .003 * height])
         eye = trimesh.creation.icosphere(subdivisions=3)
-        eye.vertices *= np.array([.025, .019, .016]) * height
+        eye.vertices *= np.array([.024, .016, .011] if refined else [.025, .019, .016]) * height
         eye.apply_translation(center)
-        parts[name] = apply_material(eye, "#ffffff", projection="cylindrical", roughness=.26, image=_iris(color))
+        if refined:
+            eye.metadata["aethryx_iris"] = 3
+        parts[name] = apply_material(eye, "#ffffff", projection="cylindrical", roughness=.26,
+                                     image=_iris(color, refined=refined))
         for lid, mesh in fitted_eyelids(eye, "#efbdab").items():
             parts[f"{name}-parpado-{lid}"] = mesh
         lash = np.column_stack((
@@ -149,6 +165,9 @@ def sculpted_face_parts(body, colors=("#6589d4", "#ae6798")):
         brow = lash.copy()
         brow[:, 1] += height * (.020 + .004 * (1 - t**2))
         brow[:, 2] -= height * .003
+        if refined:
+            lash[:, 2] -= height * .003 * (1 - t**2)
+            brow[:, 1] -= height * .003
         parts[f"{name}-pestana"] = apply_material(_sweep(lash, height * (.0009 + .0011 * (1 - abs(t)))),
                                                   "#241b34", projection="planar")
         parts[f"{name}-ceja"] = apply_material(_sweep(brow, height * (.001 + .0017 * (1 - abs(t)))),
@@ -166,6 +185,94 @@ def sculpted_face_parts(body, colors=("#6589d4", "#ae6798")):
                       height * (.00045 + .00065 * (1 - abs(t))))
         parts["boca-linea"] = apply_material(line, "#784351", projection="planar", roughness=.65)
     return parts
+
+
+def nikix_hair(body):
+    """Original swept locks with separate textures and UVs following their lengths."""
+    height = body.extents[1]
+    cx, _, cz, _ = body.metadata["aethryx_eye_guide"]
+    crown = body.bounds[1, 1]
+    root = "#e8b86c"
+    parts = {"cabello-fondo": fit_hair(body, length=.36, volume=.022, color=root)}
+    t = np.linspace(0., 1., 36)
+    for index, angle in enumerate(np.linspace(-np.pi, np.pi, 20, endpoint=False)):
+        front = np.cos(angle) > .48
+        tip = "#f19abc" if np.sin(angle) < 0 else "#8ccee9"
+        radial = (.012 + .068 * np.sin(np.pi * .60 * t)) * height
+        x = cx + np.sin(angle + .24 * t) * radial
+        if front:
+            x += height * (.037 * t**1.6)
+            y = crown + height * (.007 - (.051 + .022 * abs(np.sin(angle))) * t**1.5)
+            z = cz - .045 * height + np.cos(angle) * radial + .047 * height * t
+        else:
+            x += height * np.sin(angle) * (.035 * t**2 + .010 * np.sin(np.pi * 2 * t) * t)
+            y = crown + height * (.006 - (.35 + .024 * np.sin(index * 2)) * t**1.35)
+            z = cz - .044 * height + np.cos(angle) * radial - .042 * height * t
+        radii = height * (.003 + .010 * np.sin(np.pi * t)**.55) * (1 - .86 * t**5)
+        mesh = _sweep(np.column_stack((x, y, z)), radii)
+        mesh = apply_material(mesh, "#ffffff", projection="cylindrical",
+                              roughness=.66, image=color_gradient(root, tip))
+        v = np.r_[np.repeat(1 - t, 10), 1., 0.]
+        mesh.visual.uv[:, 1] = v
+        zone = "flequillo" if front else "largo"
+        parts[f"cabello-{zone}-{index + 1:02}"] = mesh
+    return parts
+
+
+def _nikix_jewelry(body):
+    height = body.extents[1]
+    cx, eye_y, front, _ = body.metadata["aethryx_eye_guide"]
+    gold = "#c89b4f"
+    theta = np.linspace(0, 2 * np.pi, 64, endpoint=False)
+
+    def ring(center, rx, ry):
+        flat = np.column_stack((rx * np.cos(theta), ry * np.sin(theta), np.zeros_like(theta)))
+        return _sweep(center + height * flat, np.full(len(theta), height * .0013), closed=True)
+
+    chest_y = body.bounds[0, 1] + .792 * height
+    chest_z = np.asarray(body.vertices)[(abs(body.vertices[:, 1] - chest_y) < .009 * height) &
+                                      (abs(body.vertices[:, 0] - cx) < .016 * height), 2].max()
+    pendant = np.array([cx, chest_y, chest_z + .009 * height])
+    pieces = [ring(pendant, .013, .016)]
+    for end in (-.010, -.006, 0., .006, .010):
+        t = np.linspace(0, 1, 12)
+        points = pendant + height * np.column_stack((end * t**1.4, -.013 + .026 * t, .001 * t))
+        pieces.append(_sweep(points, np.full(len(t), height * .00105)))
+    xy = np.linspace(-1, 1, 40)
+    chain = pendant + height * np.column_stack((.063 * xy, .017 + .065 * xy**2, -.043 * xy**2))
+    pieces.append(_sweep(chain, np.full(len(xy), height * .00115)))
+    parts = {"accesorio-collar-arbol": apply_material(trimesh.util.concatenate(pieces), gold, roughness=.33)}
+    for suffix, side in (("izquierdo", 1), ("derecho", -1)):
+        center = np.array([cx + side * .070 * height, eye_y - .033 * height, front - .034 * height])
+        outline = np.array([[-.004, .007], [-.008, .001], [-.007, -.004], [-.004, -.002],
+                            [-.005, -.009], [-.002, -.010], [-.001, -.004], [0, -.011],
+                            [.003, -.010], [.004, -.003], [.006, -.009], [.008, -.006],
+                            [.006, .002], [.003, .007]])
+        outline = center + height * np.column_stack((outline, np.zeros(len(outline))))
+        charm = _sweep(outline, np.full(len(outline), .00105 * height), closed=True)
+        hook = ring(center + [0, .012 * height, 0], .004, .006)
+        parts[f"accesorio-hamsa-{suffix}"] = apply_material(
+            trimesh.util.concatenate((hook, charm)), gold, roughness=.33)
+        ear = trimesh.creation.icosphere(subdivisions=2)
+        ear.vertices *= height * np.array([.009, .017, .008])
+        ear.apply_transform(trimesh.transformations.rotation_matrix(side * -.22, [0, 0, 1]))
+        ear.apply_translation(center + height * np.array([-side * .001, .022, -.006]))
+        parts[f"oreja-{suffix}"] = apply_material(ear, "#efbdab", projection="cylindrical")
+    return parts
+
+
+def nikix_preset():
+    body = sculpted_body("Anime femenino", refined=True)
+    dress, _ = fit_garment_with_clearance(body, .016, .006, "vestido")
+    dress = apply_material(dress, "#655a9d", roughness=.8)
+    return {
+        BODY: body,
+        **sculpted_face_parts(body, ("#e58caf", "#66beda")),
+        **nikix_hair(body),
+        "ropa-vestido": dress,
+        **fit_footwear(body, color="#554878"),
+        **_nikix_jewelry(body),
+    }
 
 
 def hair_locks(body, length=.45, root="#291d40", tip="#a45483"):

@@ -12,6 +12,43 @@ SEMANTIC_COLORS = {
     "hair": (163, 101, 245), "clothing": (50, 159, 255), "accessories": (255, 63, 147),
 }
 
+ISNET_MODEL = Path(__file__).resolve().parent / "models" / "anime" / "isnetis.onnx"
+
+
+class AnimeSilhouette:
+    """ISNet character foreground model using its native letterboxed RGB input."""
+
+    def __init__(self, provider="CPUExecutionProvider", path=ISNET_MODEL):
+        import onnxruntime as ort
+
+        if not Path(path).is_file():
+            raise ValueError("No se encontró el modelo local ISNet.")
+        if provider == "CUDAExecutionProvider" and hasattr(ort, "preload_dlls"):
+            ort.preload_dlls()
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 2
+        self.session = ort.InferenceSession(str(path), sess_options=options, providers=[provider])
+        if self.session.get_providers()[0] != provider:
+            raise RuntimeError(f"ONNX Runtime no pudo iniciar {provider}.")
+        (self.input,) = self.session.get_inputs()
+        if self.input.type != "tensor(float)" or self.input.shape[1:] != [3, 1024, 1024]:
+            raise ValueError("ISNet requiere una entrada float32 con forma [N,3,1024,1024].")
+
+    def predict(self, image):
+        width, height = image.size
+        scale = 1024 / max(width, height)
+        w, h = max(1, round(width * scale)), max(1, round(height * scale))
+        x, y = (1024 - w) // 2, (1024 - h) // 2
+        padded = np.zeros((1024, 1024, 3), dtype=np.float32)
+        rgb = np.asarray(image.convert("RGB"))
+        padded[y:y+h, x:x+w] = cv2.resize(rgb, (w, h)).astype(np.float32) / 255.
+        tensor = np.ascontiguousarray(padded.transpose(2, 0, 1)[None])
+        (scores,) = self.session.run(None, {self.input.name: tensor})
+        if scores.shape != (1, 1, 1024, 1024) or not np.isfinite(scores).all():
+            raise ValueError("La salida de ISNet no contiene un mapa de primer plano válido.")
+        foreground = cv2.resize(scores[0, 0, y:y+h, x:x+w], image.size, interpolation=cv2.INTER_LINEAR)
+        return Image.fromarray(np.uint8(foreground >= .5) * 255)
+
 
 def import_see_through_v2(path, size):
     """Collapse externally inferred 19-layer V2 masks to visible semantic classes."""

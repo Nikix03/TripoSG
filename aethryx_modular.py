@@ -122,12 +122,25 @@ def apply_material(mesh, color, *, projection=None, roughness=.57, image=None):
     return mesh
 
 
-def _iris(color):
+def _iris(color, *, refined=False):
     value = color.removeprefix("#")
     if len(value) != 6:
         raise ValueError("El iris necesita un color RGB hexadecimal.")
     rgb = np.array([int(value[i:i + 2], 16) for i in (0, 2, 4)])
     y, x = np.mgrid[-1:1:192j, -1:1:192j]
+    if refined:
+        radius = np.hypot(x / .23, y / .57)
+        angle = np.arctan2(y / .57, x / .23)
+        light = np.clip(.68 + .30 * y / .57 + .075 * np.sin(25 * angle + 8 * radius), .36, 1)
+        sclera = np.array([255, 249, 246]) - np.maximum(0, -.7 - y)[..., None] * [34, 53, 68]
+        mix = np.clip((1 - radius) / .045, 0, 1)[..., None]
+        tint = np.clip(rgb * light[..., None] + 42 * np.maximum(0, y)[..., None], 0, 255)
+        tint *= np.clip((1.03 - radius) / .16, .45, 1)[..., None]
+        texture = sclera * (1 - mix) + tint * mix
+        texture[np.hypot(x / .084, y / .25) < 1] = [23, 19, 34]
+        texture[((x + .065) / .034)**2 + ((y + .17) / .057)**2 < 1] = [255, 255, 252]
+        texture[(x - .079)**2 + (y - .17)**2 < .020**2] = [248, 251, 255]
+        return Image.fromarray(texture.astype(np.uint8))
     radius = np.hypot(x / .20, y / .49)
     texture = np.full((192, 192, 3), [249, 244, 242], dtype=np.uint8)
     texture[radius < 1] = rgb
@@ -158,7 +171,8 @@ def avatar_eye(body, left, color, size=1, spacing=1):
 
 
 def recolor_iris(mesh, color, roughness=.23):
-    return apply_material(mesh, "#ffffff", projection="cylindrical", roughness=roughness, image=_iris(color))
+    texture = _iris(color, refined=mesh.metadata.get("aethryx_iris") == 3)
+    return apply_material(mesh, "#ffffff", projection="cylindrical", roughness=roughness, image=texture)
 
 
 def fitted_eyelids(eye, color="#edbea9"):
@@ -457,7 +471,10 @@ def _torso_loft(body, clearance, thickness, style="top"):
     """Loft a closed two-layer top from torso sections, with clean planar rims."""
     low, high = body.bounds
     height = high[1] - low[1]
-    levels = np.linspace(*GARMENT_STYLES[style], 36 if style != "top" else 32)
+    start_level, end_level = GARMENT_STYLES[style]
+    if body.metadata.get("aethryx_style") == "genesis-anime-v3" and style != "falda":
+        end_level = .695
+    levels = np.linspace(start_level, end_level, 36 if style != "top" else 32)
     theta = np.linspace(0, 2 * np.pi, 72, endpoint=False)
     directions = np.column_stack((np.cos(theta), np.sin(theta)))
     inside, outside = [], []

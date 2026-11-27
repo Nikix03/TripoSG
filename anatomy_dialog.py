@@ -19,7 +19,7 @@ from aethryx_anatomy import (
 from aethryx_engines import suggest_anatomical_points
 from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
 from aethryx_reference import (
-    SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, profile_opposite,
+    AnimeSilhouette, SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, profile_opposite,
     reference_silhouette, segment_anime_reference,
     silhouette_calibration,
 )
@@ -115,6 +115,7 @@ class AnatomyDialog(tk.Toplevel):
                         command=self._redraw).pack(side="left")
         ttk.Button(views, text="Sugerir puntos (MediaPipe)", command=self._suggest).pack(side="left", padx=6)
         ttk.Button(views, text="Alinear y detectar vistas", command=self._auto_align).pack(side="left", padx=6)
+        ttk.Button(views, text="Alinear con ISNet", command=lambda: self._auto_align(use_isnet=True)).pack(side="left")
         ttk.Button(views, text="Importar See-through V2…", command=self._import_see_through).pack(side="left")
 
         panels = ttk.Panedwindow(self, orient="horizontal")
@@ -612,7 +613,7 @@ class AnatomyDialog(tk.Toplevel):
         self.comparisons.clear()
         self.comparison_mode.set(False)
 
-    def _auto_align(self):
+    def _auto_align(self, *, use_isnet=False):
         if self.busy or self.template is None or not self.images:
             return
         sources = {
@@ -621,6 +622,7 @@ class AnatomyDialog(tk.Toplevel):
         }
         def detect():
             results = {}
+            segmenter = AnimeSilhouette() if use_isnet and any(not row[2] for row in sources.values()) else None
             for name, (image, source, mask_path) in sources.items():
                 try:
                     found = suggest_anatomical_points(source)
@@ -630,6 +632,8 @@ class AnatomyDialog(tk.Toplevel):
                 if mask_path:
                     with Image.open(mask_path) as loaded:
                         mask = loaded.convert("RGB")
+                elif segmenter is not None:
+                    mask = segmenter.predict(image)
                 results[name] = silhouette_calibration(reference_silhouette(image, mask), found), found
             return results
         def apply(results):

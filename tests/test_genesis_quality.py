@@ -7,11 +7,11 @@ import numpy as np
 import trimesh
 
 from aethryx_anatomy import blocking_geometry_issues, validate_deformation
-from aethryx_anime import hair_locks, sculpted_body, sculpted_face_parts
+from aethryx_anime import hair_locks, nikix_preset, sculpted_body, sculpted_face_parts
 from aethryx_bridge import inspect_avatar_glb
-from aethryx_modular import BODY, EYES, anime_body, avatar_eye
+from aethryx_modular import BODY, EYES, anime_body, avatar_eye, body_contacts
 from aethryx_rig import PosePreview, export_rigged_avatar
-from aethryx_reference import profile_opposite
+from aethryx_reference import AnimeSilhouette, profile_opposite
 from kiria_dialog import apply_scene_plan, plan_scene_command
 from studio_project import load_project, save_project, unsaved_recovery_path, validate_glb
 
@@ -41,6 +41,45 @@ class GenesisQualityTests(unittest.TestCase):
             np.testing.assert_allclose(plotter.renderer.actors["moved"].bounds[:2], [2.5, 3.5])
         finally:
             plotter.close()
+
+    def test_nikix_preset_remains_modular_and_exportable(self):
+        parts = nikix_preset()
+        body = parts[BODY]
+        self.assertTrue(all(mesh.is_volume for mesh in parts.values()))
+        self.assertFalse(blocking_geometry_issues(validate_deformation(body, body)))
+        self.assertFalse(any(body_contacts(body, parts["ropa-vestido"]).values()))
+        self.assertIn("accesorio-collar-arbol", parts)
+        self.assertEqual(sum(name.startswith("accesorio-hamsa") for name in parts), 2)
+        for left, right in ((EYES[0], EYES[1]), ("cabello-largo-01", "cabello-largo-19")):
+            a, b = (np.asarray(parts[name].visual.material.baseColorTexture) for name in (left, right))
+            self.assertFalse(np.array_equal(a, b))
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "nikix.glb"
+            exported = export_rigged_avatar(trimesh.Scene(parts), target)
+            self.assertEqual(exported["skinned_nodes"], len(parts))
+            report = inspect_avatar_glb(target)
+            self.assertTrue(report["valid_native_glb"])
+            self.assertEqual(report["visemes"], 15)
+
+    def test_isnet_removes_padding_and_keeps_original_image_size(self):
+        from PIL import Image
+        from types import SimpleNamespace
+
+        class FixtureSession:
+            def run(self, _, inputs):
+                tensor = inputs["img"]
+                self.input_shape = tensor.shape
+                return [tensor[:, :1]]
+
+        provider = AnimeSilhouette.__new__(AnimeSilhouette)
+        provider.session = FixtureSession()
+        provider.input = SimpleNamespace(name="img")
+        image = Image.new("RGB", (80, 160), "black")
+        image.paste("red", (22, 40, 58, 120))
+        mask = provider.predict(image)
+        self.assertEqual(provider.session.input_shape, (1, 3, 1024, 1024))
+        self.assertEqual(mask.size, image.size)
+        self.assertEqual(mask.getbbox(), (22, 40, 58, 120))
 
     def test_new_head_is_welded_and_face_geometry_is_modular(self):
         body = self.body
