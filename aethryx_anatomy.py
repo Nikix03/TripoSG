@@ -128,6 +128,13 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
     }
     patches = partition_surfaces(mesh, matrices, offsets, masks, data.get("palette", {}),
                                  reference_colors=reference_colors)
+    hull_class = data.get("visual_hull_class")
+    if hull_class:
+        palette = data.get("palette", {})
+        if hull_class not in palette or any(mask is None for mask in masks):
+            raise ValueError("El volumen semántico necesita la misma clase en tres máscaras calibradas.")
+        volume = semantic_visual_hull(mesh.bounds, matrices, offsets, masks, palette[hull_class])
+        patches.add_geometry(volume, node_name=f"{hull_class}-volumen", geom_name=f"{hull_class}-volumen")
     proportions = data.get("proportions", {})
     if proportions:
         bounds = mesh.bounds.copy()
@@ -139,6 +146,49 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
     if deformation_report is not None:
         deformation_report.update(validate_deformation(original, mesh))
     return mesh, patches, errors
+
+
+def semantic_visual_hull(bounds, matrices, offsets, masks, color, resolution=100):
+    """Intersect labeled orthographic silhouettes in world coordinates."""
+    from skimage.measure import marching_cubes
+
+    if not 16 <= resolution <= 192 or len(matrices) != 3 or len(offsets) != 3 or len(masks) != 3:
+        raise ValueError("El volumen requiere tres vistas y una resolución entre 16 y 192.")
+    low, high = np.asarray(bounds, dtype=float)
+    step = float(max(high - low)) / resolution
+    if not np.isfinite(step) or step <= 0:
+        raise ValueError("El volumen necesita límites tridimensionales válidos.")
+    margin = .12 * (high[1] - low[1])
+    origin = low - margin
+    shape = np.ceil((high + margin - origin) / step).astype(int) + 1
+    points = np.indices(shape, dtype=np.float32).reshape(3, -1).T * step + origin
+    occupied = np.ones(len(points), dtype=bool)
+    cameras = []
+    for matrix, offset, mask in zip(matrices, offsets, masks):
+        matrix = np.asarray(matrix)
+        cameras.append(np.cross(*matrix))
+        selection = np.all(mask == color, axis=2)
+        if not selection.any():
+            raise ValueError("La clase seleccionada debe aparecer en las tres máscaras.")
+        active = np.flatnonzero(occupied)
+        x, y = np.floor(points[active] @ matrix.T + offset).astype(int).T
+        valid = (x >= 0) & (y >= 0) & (x < selection.shape[1]) & (y < selection.shape[0])
+        occupied[active[~valid]] = False
+        occupied[active[valid]] = selection[y[valid], x[valid]]
+    if np.linalg.matrix_rank(np.asarray(cameras)) < 2:
+        raise ValueError("Las cámaras no ofrecen direcciones diferentes para el volumen.")
+    grid = occupied.reshape(shape)
+    if not grid.any():
+        raise ValueError("Las máscaras de la clase no se cruzan en el espacio calibrado.")
+    if any(np.take(grid, (0, -1), axis=axis).any() for axis in range(3)):
+        raise ValueError("El volumen alcanza el límite del espacio de búsqueda. Revisa el encuadre y las máscaras.")
+    vertices, faces, _, _ = marching_cubes(grid.astype(np.float32), .5, spacing=(step,) * 3)
+    mesh = trimesh.Trimesh(vertices=vertices + origin, faces=faces, process=False)
+    mesh.fix_normals(multibody=True)
+    if not mesh.is_volume:
+        raise ValueError("El volumen semántico no forma un cierre orientado.")
+    mesh.metadata["aethryx_visual_hull"] = {"resolution": resolution, "views": 3}
+    return mesh
 
 
 def anime_proportions(vertices, bounds, factors):
@@ -284,7 +334,8 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
                     continue
                 path = output / f"componente-{len(components):02d}.glb"
                 trimesh.Scene({name: piece}).export(path, file_type="glb")
-                components.append({"name": name, "role": "surface-patch", "file": path.name})
+                role = "visual-hull" if piece.metadata.get("aethryx_visual_hull") else "surface-patch"
+                components.append({"name": name, "role": role, "file": path.name})
         (output / "componentes.json").write_text(
             json.dumps(components, ensure_ascii=False, indent=2), encoding="utf-8",
         )

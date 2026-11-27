@@ -466,6 +466,84 @@ def refine_component_fit(body, patch, original):
     return best, report
 
 
+def hair_silhouette_overlap(first, second, size=256):
+    """Orthographic surface occupancy in front, profile and top views."""
+    import cv2
+
+    bounds = np.vstack((first.bounds, second.bounds))
+    result = {}
+    for name, axes in (("front", [0, 1]), ("side", [2, 1]), ("top", [0, 2])):
+        low = bounds[:, axes].min(axis=0)
+        span = max(float(np.ptp(bounds[:, axes], axis=0).max()), 1e-10)
+        masks = []
+        for mesh in (first, second):
+            pixels = np.rint((mesh.vertices[:, axes] - low) * (size - 3) / span + 1).astype(np.int32)
+            mask = np.zeros((size, size), np.uint8)
+            for triangle in pixels[mesh.faces]:
+                if cv2.contourArea(triangle):
+                    cv2.fillConvexPoly(mask, triangle, 1)
+            masks.append(mask)
+        union = np.count_nonzero(masks[0] | masks[1])
+        result[name] = np.count_nonzero(masks[0] & masks[1]) / union if union else 0.
+    return result
+
+
+def review_generated_hair(body, guide, original):
+    """Clean an aligned copy while bounding changes to the silhouette and scalp coverage."""
+    fitted, initial_contacts = refine_component_fit(body, guide, original)
+    candidate = fitted.copy()
+    height = float(body.extents[1])
+    valid = candidate.nondegenerate_faces(height=max(height * 1e-7, 1e-10)) & candidate.unique_faces()
+    candidate.update_faces(valid)
+    removed_faces = int(len(valid) - np.count_nonzero(valid))
+    candidate.remove_unreferenced_vertices()
+    if not len(candidate.faces):
+        raise ValueError("La malla capilar carece de triángulos utilizables.")
+    split = candidate.split(only_watertight=False, repair=False)
+    main = max(split, key=lambda piece: piece.area)
+    guide_tree = cKDTree(guide.vertices)
+    keep = [part for part in split if part is main or (
+        part.area >= .001 * candidate.area and np.median(guide_tree.query(part.vertices)[0]) <= .09 * height
+    )]
+    candidate = trimesh.util.concatenate(keep)
+    candidate.metadata.update(fitted.metadata)
+    open_boundary_before = int(np.count_nonzero(np.bincount(candidate.edges_unique_inverse) == 1))
+    face_count = len(candidate.faces)
+    # Trimesh repairs triangular and quadrilateral holes on this copy.
+    candidate.fill_holes()
+    added_faces = len(candidate.faces) - face_count
+    contacts = body_contacts(body, candidate)
+    retained = hair_silhouette_overlap(fitted, candidate)
+    guide_before = hair_silhouette_overlap(guide, fitted)
+    guide_after = hair_silhouette_overlap(guide, candidate)
+    crown_y = body.bounds[1, 1] - .07 * height
+    crown = guide.vertices[guide.vertices[:, 1] >= crown_y]
+
+    def coverage(mesh):
+        return float(np.mean(cKDTree(mesh.vertices).query(crown)[0] <= .025 * height)) if len(crown) else None
+
+    before, after = coverage(fitted), coverage(candidate)
+    accepted = (min(retained.values()) >= .94 and
+                all(guide_after[key] + .025 >= value for key, value in guide_before.items()) and
+                (before is None or after + .025 >= before) and
+                all(contacts[key] <= value for key, value in initial_contacts.items()) and
+                (not fitted.is_volume or candidate.is_volume))
+    result = candidate if accepted else fitted
+    final_contacts = contacts if accepted else initial_contacts
+    incidence = np.bincount(result.edges_unique_inverse)
+    boundary_edges = int(np.count_nonzero(incidence == 1))
+    result.metadata["aethryx_hair_review"] = {
+        "cleanup_kept": bool(accepted), "degenerate_or_duplicate_faces": removed_faces,
+        "discarded_islands": len(split) - len(keep), "added_faces": added_faces,
+        "boundary_before_fill": open_boundary_before, "boundary_edges": boundary_edges,
+        "nonmanifold_edges": int(np.count_nonzero(incidence > 2)),
+        "silhouette_retained": retained, "guide_before": guide_before, "guide_after": guide_after,
+        "crown_coverage_before": before, "crown_coverage_after": after,
+        "closed_volume": bool(result.is_volume), **final_contacts,
+    }
+    return result, final_contacts
+
+
 GARMENT_STYLES = {"top": (.53, .735), "falda": (.32, .55), "vestido": (.31, .735)}
 BODY_PREVIEW_BANDS = {"torso": (.56, .698, .117), "cadera": (.45, .51, .18)}
 
@@ -600,7 +678,7 @@ def _torso_loft(body, clearance, thickness, style="top"):
     low, high = body.bounds
     height = high[1] - low[1]
     start_level, end_level = GARMENT_STYLES[style]
-    if body.metadata.get("aethryx_style") == "genesis-anime-v3" and style != "falda":
+    if body.metadata.get("aethryx_style") in {"genesis-anime-v3", "genesis-anime-v6"} and style != "falda":
         end_level = .695
     levels = np.linspace(start_level, end_level, 36 if style != "top" else 32)
     theta = np.linspace(0, 2 * np.pi, 72, endpoint=False)

@@ -63,6 +63,7 @@ class AnatomyDialog(tk.Toplevel):
         self.images = {}
         self.comparisons = {}
         self.comparison_mode = tk.BooleanVar(value=False)
+        self.visual_hull = tk.BooleanVar(value=False)
         self.segmenter = None
         self.see_through = None
         self.segment_cancel = Event()
@@ -156,6 +157,7 @@ class AnatomyDialog(tk.Toplevel):
         ttk.Button(controls, text="Proporciones 3D…", command=self._proportions).pack(side="left", padx=6)
         ttk.Checkbutton(controls, text="Comparar siluetas", variable=self.comparison_mode,
                         command=self._redraw).pack(side="left")
+        ttk.Checkbutton(controls, text="Volumen semántico", variable=self.visual_hull).pack(side="left", padx=4)
         ttk.Button(controls, text="Reconstruir y validar…", command=self._fit).pack(side="right")
 
     def _close(self):
@@ -897,6 +899,19 @@ class AnatomyDialog(tk.Toplevel):
         except ValueError as exc:
             self._error(exc)
             return
+        if self.visual_hull.get():
+            categories = tuple(name for name in data.get("palette", {}) if name not in {"body", "face", "eyes"})
+            if not categories:
+                self._error(ValueError("Carga máscaras semánticas con una categoría de componente independiente."))
+                return
+            label = simpledialog.askstring("Volumen de componente", ", ".join(categories),
+                                           initialvalue=categories[0], parent=self)
+            if label is None:
+                return
+            if label not in categories:
+                self._error(ValueError("Selecciona una categoría presente en las tres perspectivas."))
+                return
+            data["visual_hull_class"] = label
         if any(view["suggested"] for view in data["views"].values()) and not messagebox.askyesno(
                 "Revisar puntos sugeridos", "¿Confirmas que revisaste los puntos amarillos de las tres vistas?",
                 parent=self):

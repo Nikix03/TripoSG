@@ -136,7 +136,46 @@ def analyze_project_diagnostics(context):
     }
 
 
+def inspect_component_geometry(path):
+    from pathlib import Path
+    import numpy as np
+    import trimesh
+
+    if not path or not Path(path).is_file():
+        return {"status": "unavailable", "reason": "No hay una malla existente cargada."}
+    try:
+        scene = trimesh.load(path, force="scene", process=False)
+        pieces = {}
+        for node in sorted(scene.graph.nodes_geometry):
+            _, geometry = scene.graph[node]
+            mesh = scene.geometry[geometry]
+            if not isinstance(mesh, trimesh.Trimesh):
+                continue
+            incidence = np.bincount(mesh.edges_unique_inverse)
+            hair = mesh.metadata.get("aethryx_hair_review")
+            pieces[node] = {
+                "triangles": len(mesh.faces),
+                "boundary_edges": int(np.count_nonzero(incidence == 1)),
+                "nonmanifold_edges": int(np.count_nonzero(incidence > 2)),
+                "degenerate_or_duplicate_faces": int(np.count_nonzero(
+                    ~(mesh.nondegenerate_faces() & mesh.unique_faces()))),
+                "closed_volume": bool(mesh.is_volume),
+            }
+            if isinstance(hair, dict):
+                pieces[node]["hair_review"] = hair
+        return {"status": "available", "source": "deterministic-local", "components": pieces}
+    except (OSError, ValueError, TypeError) as exc:
+        return {"status": "error", "reason": str(exc)}
+
+
 TOOL_REGISTRY = {
+    "inspect_component_geometry": ToolDefinition(
+        "inspect_component_geometry",
+        "Mide caras degeneradas, bordes abiertos y cierre de cada pieza guardada.",
+        {"model_path": "string"},
+        ("read",),
+        True,
+    ),
     "split_disconnected_components": ToolDefinition(
         "split_disconnected_components",
         "Separa componentes geométricos desconectados sin asignar anatomía.",
@@ -237,6 +276,8 @@ def execute_tool(name, inputs, project_context=None, write_allowed=False):
         return list_scene_nodes(inputs.get("model_path", ""))
     if name == "get_mesh_statistics":
         return get_mesh_statistics(inputs.get("model_path", ""))
+    if name == "inspect_component_geometry":
+        return inspect_component_geometry(inputs.get("model_path", ""))
     if name == "split_disconnected_components":
         return split_disconnected_components(inputs.get("model_path", ""))
     if name == "validate_avatar":

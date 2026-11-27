@@ -21,7 +21,7 @@ from pose_dialog import PoseDialog
 from aethryx_modular import (
     BODY, BODY_PREVIEW_BANDS, EYES, FACE_CONTROLS, ModularAvatar, anime_body, apply_material, avatar_eye,
     body_contacts, facial_vertices, fit_component_to_patch, fit_footwear, fit_garment_with_clearance,
-    fit_hair, fitted_eyelids, head_frame, refine_component_fit,
+    fit_hair, fitted_eyelids, head_frame, review_generated_hair,
     mouth_components, recolor_iris, regional_hair, write_new_glb,
 )
 
@@ -55,7 +55,7 @@ class ComponentDialog(tk.Toplevel):
              ("Cabello por regiones…", self.hair_regions), ("Ocultar región corporal…", self.toggle_body_band)),
             (("Cuerpo anime v2…", self.create_sculpted_body), ("Mechones independientes…", self.independent_hair)),
             (("Preset Nikix v3", lambda: self.create_nikix(3)), ("Preset Nikix v4", lambda: self.create_nikix(4)),
-             ("Preset Nikix v5", lambda: self.create_nikix(5)),
+             ("Preset Nikix v5", lambda: self.create_nikix(5)), ("Preset Nikix v6", lambda: self.create_nikix(6)),
              ("Ajustar malla a pieza…", self.fit_generated)),
             (("Mapas PBR…", self.pbr), ("Diagnóstico UV…", self.diagnose_uv), ("Ajustar UV…", self.edit_uv),
              ("Generar atlas UV", self.generate_uv)),
@@ -174,7 +174,7 @@ class ComponentDialog(tk.Toplevel):
         node = f"{target}-ajuste"
 
         def align():
-            fit = refine_component_fit if target.startswith(("cabello", "hair")) else fit_component_to_patch
+            fit = review_generated_hair if target.startswith(("cabello", "hair")) else fit_component_to_patch
             candidate, report = fit(self._body(), self.avatar.get(target, world=True), load_body_template(Path(path)))
             self.avatar.add(node, candidate)
             if any(report.values()) or not candidate.is_volume:
@@ -182,7 +182,9 @@ class ComponentDialog(tk.Toplevel):
                 status = "Borrador oculto para revisión."
             else:
                 status = "Ajuste preliminar sin contactos detectados."
-            return f"{status} Contactos {report['contacts']}, vértices dentro {report['inside']}."
+            review = candidate.metadata.get("aethryx_hair_review")
+            boundary = f" Bordes abiertos {review['boundary_edges']}." if review else ""
+            return f"{status} Contactos {report['contacts']}, vértices dentro {report['inside']}.{boundary}"
 
         self._edit_background(align, node)
 

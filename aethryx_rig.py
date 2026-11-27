@@ -13,7 +13,7 @@ from aethryx_modular import BODY, EYES, ModularAvatar, head_frame
 
 EXPORT_PROFILES = {
     "Studio Original": (1., False), "VRChat PC Quality": (.8, False),
-    "VRChat PC Optimized": (.55, True), "VRChat Mobile": (.30, True),
+    "VRChat PC Optimized": (.47, True), "VRChat Mobile": (.30, True),
 }
 
 
@@ -25,7 +25,6 @@ def profile_parts(parts, profile):
     import pymeshlab
     from trimesh.visual.texture import TextureVisuals
 
-    bangs = {}
     for name, mesh in parts.items():
         if not name.startswith(("cabello-largo-", "cabello-flequillo-")):
             continue
@@ -75,7 +74,12 @@ def profile_parts(parts, profile):
                                     vertex_normals=shape.vertex_normals[source],
                                     visual=TextureVisuals(uv=wedges[first], material=material.copy()))
         working[name] = component
-        if merge and name.startswith("cabello-flequillo-"):
+    if merge:
+        _atlas_hair_gradients(working)
+    bangs = {}
+    for name, mesh in working.items():
+        material = getattr(mesh.visual, "material", None)
+        if merge and name.startswith("cabello-flequillo-") and material is not None:
             bangs.setdefault(hash(material), []).append(name)
     for candidates in bangs.values():
         if len(candidates) < 2:
@@ -88,7 +92,89 @@ def profile_parts(parts, profile):
         geometry.visual = TextureVisuals(uv=np.vstack([m.visual.uv for m in meshes]),
                                          material=meshes[0].visual.material.copy())
         working[candidates[0]] = geometry
+    if profile == "VRChat Mobile":
+        _limit_mobile_textures(working)
     return working
+
+
+def _limit_mobile_textures(parts):
+    from PIL import Image
+    from trimesh.visual.texture import TextureVisuals
+
+    replacements = {}
+    for name, mesh in parts.items():
+        visual = mesh.visual
+        material = getattr(visual, "material", None)
+        uv = getattr(visual, "uv", None)
+        if uv is None or material is None or not hasattr(material, "baseColorTexture"):
+            continue
+        fields = ("baseColorTexture", "normalTexture", "metallicRoughnessTexture", "occlusionTexture",
+                  "emissiveTexture")
+        oversized = [field for field in fields
+                     if (image := getattr(material, field, None)) is not None and max(image.size) > 256]
+        if not oversized:
+            continue
+        key = hash(material)
+        if key not in replacements:
+            reduced = material.copy()
+            for field in oversized:
+                image = getattr(material, field).copy()
+                image.thumbnail((256, 256), Image.Resampling.LANCZOS)
+                setattr(reduced, field, image)
+            replacements[key] = reduced
+        copied = mesh.copy()
+        copied.visual = TextureVisuals(uv=uv.copy(), material=replacements[key])
+        parts[name] = copied
+
+
+def _atlas_hair_gradients(parts):
+    """Pack compatible opaque base-color maps without combining long locks."""
+    from PIL import Image
+    from trimesh.visual.texture import TextureVisuals
+
+    groups = {}
+    for name, mesh in parts.items():
+        if not name.startswith(("cabello-flequillo-", "cabello-largo-")):
+            continue
+        material = getattr(mesh.visual, "material", None)
+        image = getattr(material, "baseColorTexture", None)
+        uv = getattr(mesh.visual, "uv", None)
+        if image is None or uv is None or not np.all((uv >= -1e-8) & (uv <= 1 + 1e-8)):
+            continue
+        if (getattr(material, "alphaMode", None) not in (None, "OPAQUE") or
+                any(getattr(material, field, None) is not None for field in (
+                    "normalTexture", "emissiveTexture", "occlusionTexture", "metallicRoughnessTexture", "emissiveFactor",
+                ))):
+            continue
+        key = (tuple(material.baseColorFactor) if material.baseColorFactor is not None else (),
+               material.roughnessFactor, material.metallicFactor, material.doubleSided)
+        groups.setdefault(key, []).append((name, mesh, image.convert("RGB")))
+
+    for items in groups.values():
+        tiles = {}
+        locations = {}
+        for name, _, image in items:
+            key = image.size, image.tobytes()
+            if key not in tiles:
+                tiles[key] = (len(tiles), image)
+            locations[name] = tiles[key][0]
+        if len(tiles) < 2 or len(tiles) > 32:
+            continue
+        width, height = max(image.width for _, image in tiles.values()), max(image.height for _, image in tiles.values())
+        pitch = width + 4
+        bitmap = np.zeros((height + 4, len(tiles) * pitch, 3), dtype=np.uint8)
+        for index, image in tiles.values():
+            pixels = np.asarray(image.resize((width, height), Image.Resampling.BILINEAR))
+            bitmap[:, index * pitch:(index + 1) * pitch] = np.pad(pixels, ((2, 2), (2, 2), (0, 0)), mode="edge")
+        material = items[0][1].visual.material.copy()
+        material.baseColorTexture = Image.fromarray(bitmap)
+        for name, mesh, _ in items:
+            copy = mesh.copy()
+            uv = np.clip(mesh.visual.uv, 0., 1.)
+            uv[:, 0] = (uv[:, 0] * (width - 1) + locations[name] * pitch + 2.5) / bitmap.shape[1]
+            uv[:, 1] = (uv[:, 1] * (height - 1) + 2.5) / bitmap.shape[0]
+            copy.visual = TextureVisuals(uv=uv, material=material)
+            parts[name] = copy
 
 
 def humanoid_skeleton(body, eyes=None, offsets=None):

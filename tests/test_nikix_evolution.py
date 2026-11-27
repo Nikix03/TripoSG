@@ -7,13 +7,59 @@ import numpy as np
 import trimesh
 
 from aethryx_anime import nikix_preset
+from aethryx_anatomy import semantic_visual_hull
 from aethryx_materials import unwrap_uv, uv_quality
-from aethryx_modular import BODY, body_contacts, fit_component_to_patch, refine_component_fit
+from aethryx_modular import BODY, body_contacts, fit_component_to_patch, refine_component_fit, review_generated_hair
 from aethryx_rig import profile_parts
 from studio_project import generation_recovery_path, load_project, save_project
+from aethryx_tools import execute_tool
 
 
 class NikixEvolutionTests(unittest.TestCase):
+    def test_kiria_reports_open_edges_without_writing_the_model(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "open.ply"
+            mesh = trimesh.Trimesh(vertices=[[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+                                   faces=[[0, 1, 2]], process=False)
+            mesh.export(path)
+            original = path.read_bytes()
+            report = execute_tool("inspect_component_geometry", {"model_path": str(path)})
+            self.assertEqual(report["status"], "available")
+            piece = next(iter(report["components"].values()))
+            self.assertEqual(piece["boundary_edges"], 3)
+            self.assertFalse(piece["closed_volume"])
+            self.assertEqual(path.read_bytes(), original)
+    def test_semantic_volume_preserves_three_calibrated_silhouettes(self):
+        from PIL import Image, ImageDraw
+        color = (220, 15, 130)
+        masks = []
+        for width in (28, 42, 28):
+            mask = Image.new("RGB", (100, 100))
+            ImageDraw.Draw(mask).ellipse((50-width/2, 25, 50+width/2, 75), fill=color)
+            masks.append(np.asarray(mask))
+        matrices = [np.array([[30, 0, 0], [0, -30, 0]]),
+                    np.array([[0, 0, 30], [0, -30, 0]]),
+                    np.array([[-30, 0, 0], [0, -30, 0]])]
+        mesh = semantic_visual_hull([[-1, -1, -1], [1, 1, 1]], matrices,
+                                    [np.array([50, 50])] * 3, masks, color, resolution=52)
+        self.assertTrue(mesh.is_volume)
+        np.testing.assert_allclose(mesh.extents, [.97, 1.70, 1.43], atol=.095)
+
+    def test_hair_cleanup_preserves_source_and_removes_tiny_island(self):
+        body = trimesh.creation.icosphere()
+        guide = trimesh.creation.icosphere(subdivisions=2, radius=.42)
+        guide.apply_translation([0, 2, 0])
+        artifact = trimesh.creation.icosphere(subdivisions=1, radius=.006)
+        artifact.apply_translation([0, 2, .55])
+        source = trimesh.util.concatenate((guide, artifact))
+        before = source.vertices.copy()
+        cleaned, overlap = review_generated_hair(body, guide, source)
+        report = cleaned.metadata["aethryx_hair_review"]
+        np.testing.assert_array_equal(source.vertices, before)
+        self.assertTrue(report["cleanup_kept"])
+        self.assertEqual(report["discarded_islands"], 1)
+        self.assertFalse(any(overlap.values()))
+
     def test_generation_recovery_uses_atomic_project_manifest(self):
         with TemporaryDirectory() as folder, patch.dict("os.environ", {"LOCALAPPDATA": folder}):
             root = Path(folder)
@@ -91,3 +137,13 @@ class NikixEvolutionTests(unittest.TestCase):
         for part in (BODY, "ojo-izquierdo", "ojo-derecho", "accesorio-hamsa-izquierdo", "ropa-ribete-emisivo"):
             self.assertIs(optimized[part], studio[part])
         self.assertIn("cabello-largo-01", optimized)
+
+    def test_mobile_texture_budget_does_not_change_the_editable_material(self):
+        studio = nikix_preset(version=6)
+        mobile = profile_parts(studio, "VRChat Mobile")
+        original = studio[BODY]
+        converted = mobile[BODY]
+        self.assertEqual(original.visual.material.baseColorTexture.size, (1024, 1024))
+        self.assertEqual(converted.visual.material.baseColorTexture.size, (256, 256))
+        np.testing.assert_array_equal(converted.triangles, original.triangles)
+        np.testing.assert_array_equal(converted.visual.uv, original.visual.uv)

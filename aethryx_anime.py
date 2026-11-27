@@ -29,7 +29,7 @@ def _neck_loop(mesh):
     return np.asarray(loop)
 
 
-def sculpted_body(profile="Anime neutro", *, refined=False):
+def sculpted_body(profile="Anime neutro", *, refined=False, facial_loops=False):
     """Replace the upper topology and weld the procedural head to the preserved torso."""
     original = anime_body(profile)
     lower, upper = original.bounds
@@ -53,6 +53,9 @@ def sculpted_body(profile="Anime neutro", *, refined=False):
         rz = [0, .026, .035, .043, .053, .058, .062, .059, .048, 0]
     span = height * (.199 if profile == "Anime femenino" else .194)
     layers = np.linspace(0, 1, 35)[1:-1]
+    if facial_loops:
+        # Allocate separate strips to the upper lip, lower lip, bridge and eyelid zones.
+        layers = np.sort(np.r_[layers, [.311, .321, .334, .347, .416, .450, .536, .553, .568, .586, .605]])
     loops = [join]
     position = [np.asarray(trunk.vertices)]
     front_z = None
@@ -73,6 +76,12 @@ def sculpted_body(profile="Anime neutro", *, refined=False):
             nose *= .80
             lips *= .75
             cheek *= .75
+        if facial_loops:
+            lips = .0048 * np.exp(-(u / .021)**4) * (
+                np.exp(-((y - .335) / .012)**2) + .78 * np.exp(-((y - .312) / .011)**2)
+                - .42 * np.exp(-((y - .324) / .006)**2))
+            socket *= .84
+            nose += .003 * np.exp(-(u / .007)**2 - ((y - .485) / .105)**2)
         z += (nose + lips + cheek - socket) * height * forward**3
         # Retain the precise neck seam while distributing the new head's vertices.
         blend = np.clip(y / .14, 0, 1)
@@ -98,7 +107,7 @@ def sculpted_body(profile="Anime neutro", *, refined=False):
     if not result.is_volume or np.any(result.area_faces <= 1e-12):
         raise ValueError("La nueva cabeza no produjo un cuerpo cerrado y orientado.")
     result.metadata.update(
-        aethryx_style="genesis-anime-v3" if refined else "genesis-anime-v2",
+        aethryx_style="genesis-anime-v6" if facial_loops else "genesis-anime-v3" if refined else "genesis-anime-v2",
         aethryx_profile=profile,
         aethryx_eye_guide=[float(center[0]), float(neck_y + .575 * span), front_z, float(height)],
         aethryx_face_levels={name: float(neck_y + t * span)
@@ -145,13 +154,16 @@ def sculpted_face_parts(body, colors=("#6589d4", "#ae6798")):
     if not guide or len(guide) != 4:
         raise ValueError("Crea primero un cuerpo anime v2.")
     cx, cy, cz, height = guide
-    refined = body.metadata.get("aethryx_style") == "genesis-anime-v3"
+    style = body.metadata.get("aethryx_style")
+    refined = style in {"genesis-anime-v3", "genesis-anime-v6"}
     parts = {}
     t = np.linspace(-1, 1, 25)
     for name, side, color in zip(EYES, (1, -1), colors):
         center = np.array([cx + side * .030 * height, cy, cz - .003 * height])
         eye = trimesh.creation.icosphere(subdivisions=3)
         eye.vertices *= np.array([.024, .016, .011] if refined else [.025, .019, .016]) * height
+        if style == "genesis-anime-v6":
+            eye.vertices[:, 1] *= 1 - .24 * (np.abs(eye.vertices[:, 0]) / (.024 * height))**2
         eye.apply_translation(center)
         if refined:
             eye.metadata["aethryx_iris"] = 3
@@ -274,10 +286,10 @@ def _nikix_jewelry(body):
 
 
 def nikix_preset(*, version=3):
-    if version not in (3, 4, 5):
-        raise ValueError("Elige el preset Nikix 3, 4 o 5.")
+    if version not in (3, 4, 5, 6):
+        raise ValueError("Elige el preset Nikix 3, 4, 5 o 6.")
     v4 = version >= 4
-    body = sculpted_body("Anime femenino", refined=True)
+    body = sculpted_body("Anime femenino", refined=True, facial_loops=version == 6)
     dress, _ = fit_garment_with_clearance(body, .016, .006, "vestido")
     dress = apply_material(dress, "#52318a" if v4 else "#655a9d", roughness=.8)
     pieces = {
@@ -299,7 +311,7 @@ def nikix_preset(*, version=3):
         trim.visual.material.emissiveFactor = [.17, .026, .09]
         trim.metadata["aethryx_garment"] = dress.metadata["aethryx_garment"].copy()
         pieces["ropa-ribete-emisivo"] = trim
-    if version == 5:
+    if version >= 5:
         _detail_nikix_materials(pieces)
     return pieces
 
