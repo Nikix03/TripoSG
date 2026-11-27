@@ -1,5 +1,12 @@
 # Estado de AETHRYX Studio
 
+## Genesis Origin · Consolidación con skinning y mangas
+
+- Unity ofrece **Tools → AETHRYX → Crear copia con cabello consolidado**. Combina mechones largos de un solo material compatible y unión rígida, remapea los huesos y transforma sus matrices de reposo. Opera sobre una copia. En V6 PC Optimized pasó de 36 a 24 renderers, sin alterar el avatar original. La prueba de Unity 2022.3.22f1 con SDK 3.10.6 comprobó la posición de reposo del mechón preparado y 0,11848 unidades de deformación al girar su pivote PhysBone. El cuerpo y la cara se conservan independientes. El SDK sigue calificando VeryPoor en PC, ahora solo por SkinnedMeshCount. No se publicó ningún avatar.
+- **Administrador de componentes → Prenda superior → mangas** ofrece dos cubiertas de doble pared adaptadas a hombro y codo con pesos del cuerpo. V6 registró cero contactos y vértices interiores en reposo, en la pose de demostración y con codos flexionados 45°. El comando estructurado de KIRIA requiere seleccionar el cuerpo, genera en copia y mantiene el flujo de confirmación. No se repitió la consulta a Ollama. [Revisión en pose](test_assets/anime/project-nikix/origin-mangas.png)
+- Pasaron 93 pruebas. Siguen pendientes el cabello generado listo para aceptar, una cola persistente por componente, la mejora de pose y silueta del ensayo independiente, la clasificación Medium, los conjuntos intercambiables y Poiyomi.
+
+
 ## Genesis Origin · Vistas parciales y ensayo independiente
 
 - Git arrancó limpio en `29f3868`. **Cargar conjunto** asigna una a tres imágenes por nombres de vista y solicita confirmación. El ajuste usa calibraciones disponibles y continuidad de la plantilla en direcciones sin medir. El informe identifica las vistas presentes y el rango de cada punto. El asistente puede guardar y validar el GLB articulado del cuerpo en el mismo directorio que el cuerpo estático. Los parches permanecen independientes.

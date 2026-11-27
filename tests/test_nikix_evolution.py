@@ -11,12 +11,30 @@ from aethryx_anatomy import semantic_visual_hull
 from aethryx_materials import unwrap_uv, uv_quality
 from aethryx_modular import (BODY, _repair_hair_seams, body_contacts, fit_component_to_patch,
                            refine_component_fit, review_generated_hair)
-from aethryx_rig import profile_parts
+from aethryx_rig import PosePreview, demo_rotations, profile_parts
 from studio_project import generation_recovery_path, load_project, save_project
 from aethryx_tools import execute_tool
 
 
 class NikixEvolutionTests(unittest.TestCase):
+    def test_separate_sleeves_clear_body_in_two_poses(self):
+        from kiria_dialog import apply_scene_plan, plan_scene_command
+        body = nikix_preset(version=6)[BODY]
+        scene = trimesh.Scene({BODY: body})
+        result = apply_scene_plan(plan_scene_command("mangas", [BODY], [BODY]), scene, ())
+        sleeves = {name: result.get(name) for name in result.nodes if name != BODY}
+        self.assertEqual(set(scene.graph.nodes_geometry), {BODY})
+        self.assertEqual(len(sleeves), 2)
+        source = {BODY: body, **sleeves}
+        preview = PosePreview(trimesh.Scene(source))
+        poses = (demo_rotations(), {"LeftLowerArm": (0, 0, 45), "RightLowerArm": (0, 0, -45)})
+        for pose in poses:
+            vertices, _ = preview.evaluate(pose)
+            posed = {name: mesh.copy() for name, mesh in source.items()}
+            for name, mesh in posed.items():
+                mesh.vertices = vertices[name]
+            for name in sleeves:
+                self.assertFalse(any(body_contacts(posed[BODY], posed[name]).values()))
     def test_kiria_reports_open_edges_without_writing_the_model(self):
         with TemporaryDirectory() as folder:
             path = Path(folder) / "open.ply"

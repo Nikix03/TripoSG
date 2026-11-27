@@ -21,7 +21,7 @@ from pose_dialog import PoseDialog
 from aethryx_modular import (
     BODY, BODY_PREVIEW_BANDS, EYES, FACE_CONTROLS, ModularAvatar, anime_body, apply_material, avatar_eye,
     body_contacts, facial_vertices, fit_component_to_patch, fit_footwear, fit_garment_with_clearance,
-    fit_hair, fitted_eyelids, head_frame, review_generated_hair,
+    fit_hair, fit_sleeves, fitted_eyelids, head_frame, review_generated_hair,
     mouth_components, recolor_iris, regional_hair, write_new_glb,
 )
 
@@ -379,10 +379,16 @@ class ComponentDialog(tk.Toplevel):
             self._edit(lambda: self._new_fitted("cabello", fit_hair(self._body(), *values)), "cabello")
 
     def clothing(self):
-        style = simpledialog.askstring("Estilo de prenda", "Elige top, falda o vestido.", initialvalue="top", parent=self)
+        style = simpledialog.askstring("Estilo de prenda", "Elige top, falda, vestido o mangas.", initialvalue="top", parent=self)
         if style is None:
             return
         style = style.strip().lower()
+        if style == "mangas":
+            def generate_sleeves():
+                self._group(fit_sleeves(self._body()))
+                return "Mangas independientes validadas en reposo sin contactos ni vértices interiores."
+            self._edit_background(generate_sleeves, "prenda-manga-izquierda")
+            return
         values = self._numbers(
             "Prenda superior", "Holgura 0,003–0,06 y espesor 0,001–0,03 de la altura.", "0.012 0.006", 2,
         )

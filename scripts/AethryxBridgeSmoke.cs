@@ -140,6 +140,47 @@ public static class AethryxBridgeSmoke {
         }
     }
 
+    public static void TestHairConsolidation()
+    {
+        try
+        {
+            var source = AethryxImporter.Import(Environment.GetEnvironmentVariable("AETHRYX_UNITY_FIXTURE"));
+            var copy = UnityEngine.Object.Instantiate(source);
+            var hair = copy.GetComponentsInChildren<SkinnedMeshRenderer>()
+                .First(renderer => renderer.name == "cabello-largo-01");
+            var phys = AethryxVrchat.PreparePhysBone(hair);
+            var original = new Mesh();
+            hair.BakeMesh(original);
+            int before = source.GetComponentsInChildren<SkinnedMeshRenderer>().Length;
+            int removed = AethryxHairCombine.Consolidate(copy);
+            var merged = copy.GetComponentsInChildren<SkinnedMeshRenderer>()
+                .Single(renderer => renderer.bones.Contains(phys.transform));
+            var rest = new Mesh();
+            merged.BakeMesh(rest);
+            var restVertices = rest.vertices;
+            var spatial = new System.Collections.Generic.HashSet<Vector3>(restVertices);
+            if (removed < 1 || !original.vertices.All(vertex => spatial.Contains(vertex) ||
+                    restVertices.Any(other => (vertex - other).sqrMagnitude < 1e-8f)))
+                throw new InvalidOperationException("Consolidation shifted the source silhouette.");
+            phys.transform.localRotation = Quaternion.Euler(0, 0, 18);
+            var moved = new Mesh();
+            merged.BakeMesh(moved);
+            var posed = moved.vertices;
+            float delta = restVertices.Select((vertex, index) => (vertex - posed[index]).magnitude).Max();
+            if (delta < .002f || before != source.GetComponentsInChildren<SkinnedMeshRenderer>().Length)
+                throw new InvalidOperationException("Consolidation lost the PhysBone pivot or changed the original.");
+            int after = copy.GetComponentsInChildren<SkinnedMeshRenderer>().Length;
+            Debug.Log("AETHRYX_ORIGIN_HAIR renderers=" + before + "->" + after + " delta=" + delta);
+            AethryxVrchat.ReportPerformance(copy);
+            EditorApplication.Exit(0);
+        }
+        catch (Exception exc)
+        {
+            Debug.LogException(exc);
+            EditorApplication.Exit(1);
+        }
+    }
+
     static void TestFbx(GameObject root)
     {
         var path = AssetDatabase.GenerateUniqueAssetPath("Assets/AETHRYX/nikix-roundtrip.fbx");

@@ -629,6 +629,35 @@ def fit_garment_with_clearance(body, clearance, thickness, style):
     raise ValueError(f"Se rechazó el ajuste. Contactos {report['contacts']}, vértices dentro {report['inside']}.")
 
 
+def fit_sleeves(body, clearance=.009, thickness=.004):
+    """Fit independent double-wall sleeves to the upper arm and elbow."""
+    from aethryx_rig import humanoid_skeleton
+
+    if not body.is_volume or not .003 <= clearance <= .03 or not .002 <= thickness <= .015:
+        raise ValueError("Las mangas requieren un cuerpo cerrado, holgura 0,003–0,03 y espesor 0,002–0,015.")
+    names, _, locations = humanoid_skeleton(body)
+    centers = body.triangles_center
+    height = body.extents[1]
+    pieces = {}
+    for suffix, side in (("izquierda", "Left"), ("derecha", "Right")):
+        shoulder, elbow, wrist = [locations[names.index(side + joint)] for joint in ("UpperArm", "LowerArm", "Hand")]
+        upper = elbow - shoulder
+        forearm = wrist - elbow
+        end = elbow + .18 * forearm
+        axis = end - shoulder
+        along = (centers - shoulder) @ axis / (axis @ axis)
+        separation = np.linalg.norm(centers - shoulder - along[:, None] * axis, axis=1)
+        sign = 1 if side == "Left" else -1
+        selected = ((along > .32) & (along < 1.) & (separation < .09 * height) &
+                    (sign * (centers[:, 0] - shoulder[0]) > .024 * height))
+        sleeve = _shell(body, selected, clearance * height, thickness * height)
+        report = body_contacts(body, sleeve)
+        if any(report.values()) or not sleeve.is_volume:
+            raise ValueError(f"Manga {suffix} rechazada. Contactos {report['contacts']}, vértices interiores {report['inside']}.")
+        pieces[f"prenda-manga-{suffix}"] = apply_material(sleeve, "#52318a", projection="cylindrical", roughness=.83)
+    return pieces
+
+
 def _radial_profile(outline, directions):
     center = (outline.min(axis=0) + outline.max(axis=0)) / 2
     first = outline[:-1] - center

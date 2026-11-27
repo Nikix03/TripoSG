@@ -14,7 +14,7 @@ import numpy as np
 from aethryx_anatomy import blocking_geometry_issues, validate_deformation
 from aethryx_anime import hair_locks
 from aethryx_modular import (BODY, EYES, ModularAvatar, apply_material, facial_vertices,
-                            fit_garment_with_clearance, recolor_iris, write_new_glb)
+                            fit_garment_with_clearance, fit_sleeves, recolor_iris, write_new_glb)
 from aethryx_ollama import LOCAL_ACTIONS, OllamaProvider
 from aethryx_tools import execute_tool, tool_catalog
 
@@ -58,6 +58,11 @@ def plan_scene_command(action, selection, nodes, parameter=""):
         if action == "holgura_ropa" and (len(selected) != 1 or not selected[0].startswith("prenda-") or BODY not in nodes):
             raise ValueError("Selecciona una prenda ajustable en una escena con cuerpo base.")
         return ScenePlan(action, selected, value=value)
+    if action == "mangas":
+        if selected != (BODY,) or parameter:
+            raise ValueError("Selecciona solo el cuerpo base y deja el parámetro vacío para proponer mangas.")
+        if any(name.startswith("prenda-manga-") for name in nodes):
+            raise ValueError("La escena ya contiene mangas.")
     return ScenePlan(action, selected)
 
 
@@ -104,6 +109,9 @@ def apply_scene_plan(plan, scene, hidden):
         new.visual.material = previous.visual.material.copy()
         new.apply_transform(np.linalg.inv(avatar.scene.graph[node][0]))
         avatar.replace(node, new)
+    elif plan.action == "mangas":
+        for node, sleeve in fit_sleeves(avatar.get(BODY, world=True)).items():
+            avatar.add(node, sleeve)
     elif plan.action == "altura":
         floor = avatar.get(BODY, world=True).bounds[0, 1]
         scale = np.eye(4)
