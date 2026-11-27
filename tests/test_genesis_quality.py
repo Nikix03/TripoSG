@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import trimesh
@@ -10,6 +11,9 @@ from aethryx_anime import hair_locks, sculpted_body, sculpted_face_parts
 from aethryx_bridge import inspect_avatar_glb
 from aethryx_modular import BODY, EYES, anime_body, avatar_eye
 from aethryx_rig import PosePreview, export_rigged_avatar
+from aethryx_reference import profile_opposite
+from kiria_dialog import apply_scene_plan, plan_scene_command
+from studio_project import load_project, save_project, unsaved_recovery_path, validate_glb
 
 
 class GenesisQualityTests(unittest.TestCase):
@@ -47,3 +51,53 @@ class GenesisQualityTests(unittest.TestCase):
             report = inspect_avatar_glb(path)
             self.assertTrue(report["valid_native_glb"])
             self.assertEqual(report["visemes"], 15)
+
+    def test_joint_edits_are_saved_in_glb_and_expressions_blend(self):
+        scene = trimesh.Scene({BODY: self.body})
+        default = PosePreview(scene)
+        scene.metadata["aethryx_joint_offsets"] = {"LeftLowerArm": [0, .025, 0]}
+        edited = PosePreview(scene)
+        index = default.skeleton[0].index("LeftLowerArm")
+        self.assertAlmostEqual(edited.skeleton[2][index, 1] - default.skeleton[2][index, 1],
+                               .025 * self.body.extents[1])
+        rest, _ = edited.evaluate({})
+        left, _ = edited.evaluate({}, "Smile", .25)
+        right, _ = edited.evaluate({}, "JawOpen", .4)
+        combined, _ = edited.evaluate({}, {"Smile": .25, "JawOpen": .4})
+        np.testing.assert_allclose(combined[BODY], left[BODY] + right[BODY] - rest[BODY], atol=1e-8)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "offset.glb"
+            export_rigged_avatar(scene, path)
+            nodes = {node["name"]: node for node in validate_glb(path)["nodes"]}
+            parent = edited.skeleton[1][index]
+            np.testing.assert_allclose(nodes["LeftLowerArm"]["translation"],
+                                       edited.skeleton[2][index] - edited.skeleton[2][parent])
+
+    def test_kiria_can_edit_body_and_iris_without_writing_original(self):
+        parts = sculpted_face_parts(self.body)
+        scene = trimesh.Scene({BODY: self.body, EYES[0]: parts[EYES[0]], EYES[1]: parts[EYES[1]]})
+        plan = plan_scene_command("altura", [BODY], scene.graph.nodes_geometry, "1.12")
+        edited = apply_scene_plan(plan, scene, ())
+        self.assertAlmostEqual(edited.get(BODY).extents[1], self.body.extents[1] * 1.12)
+        np.testing.assert_allclose(edited.get(BODY).bounds[0, 1], self.body.bounds[0, 1])
+        right = np.asarray(parts[EYES[1]].visual.material.baseColorTexture)
+        applied = apply_scene_plan(plan_scene_command("color_iris", [EYES[0]], edited.nodes, "#e1468c"),
+                                   edited.scene, ())
+        np.testing.assert_array_equal(np.asarray(applied.get(EYES[1]).visual.material.baseColorTexture), right)
+        self.assertFalse(np.array_equal(np.asarray(applied.get(EYES[0]).visual.material.baseColorTexture),
+                                        np.asarray(parts[EYES[0]].visual.material.baseColorTexture)))
+
+    def test_profile_alignment_rejects_ambiguous_landmarks(self):
+        self.assertIs(profile_opposite({0: (25, 40), 7: (39, 39)}, 170), False)
+        self.assertIs(profile_opposite({0: (63, 40), 8: (40, 40)}, 170), True)
+        self.assertIsNone(profile_opposite({0: (63, 40), 7: (61, 40), 8: (66, 40)}, 170))
+        self.assertIsNone(profile_opposite({7: (22, 40)}, 170))
+
+    def test_unsaved_recovery_names_are_distinct_and_readable(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict("os.environ", {"LOCALAPPDATA": folder}):
+            first, second = unsaved_recovery_path(), unsaved_recovery_path()
+            self.assertNotEqual(first, second)
+            first.parent.mkdir(parents=True)
+            save_project(first, image="", model=None, output="", steps=37, faces=-1, seed=42, guidance=7)
+            self.assertEqual(load_project(first)["settings"]["steps"], 37)
+            self.assertFalse(second.exists())

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import struct
 import tempfile
+from uuid import uuid4
 from copy import deepcopy
 
 from character_sheet import validate_reference_regions
@@ -63,6 +64,15 @@ def recovery_path(project):
     if path.suffix.lower() != ".aeth" or path.stem.endswith(".recovery"):
         raise ValueError("Selecciona un proyecto principal .aeth para crear una recuperación.")
     return path.with_name(f"{path.stem}.recovery.aeth")
+
+
+def unsaved_recovery_directory():
+    local = os.environ.get("LOCALAPPDATA")
+    return (Path(local) if local else Path.home() / ".cache") / "AETHRYXStudio" / "Recovery"
+
+
+def unsaved_recovery_path():
+    return unsaved_recovery_directory() / f"session-{uuid4().hex}.aeth"
 
 
 def newer_recovery(project):

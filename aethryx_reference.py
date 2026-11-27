@@ -86,6 +86,23 @@ def silhouette_calibration(foreground, points):
     return [float(np.median(torso)), floor], crown
 
 
+def profile_opposite(points, width):
+    """Return a profile direction only when a visible facial landmark supports it."""
+    if 0 not in points:
+        return None
+    ears = [points[index][0] for index in (7, 8) if index in points]
+    if not ears:
+        return None
+    nose = points[0][0]
+    differences = [nose - ear for ear in ears]
+    threshold = max(3., .025 * width)
+    if min(differences) > threshold:
+        return True
+    if max(differences) < -threshold:
+        return False
+    return None
+
+
 def segment_anime_reference(image, model_path, labels):
     """Run a local RGB [0,1] NCHW ONNX parser and return an exact RGB class mask."""
     if len(labels) != len(SEMANTIC_COLORS) or set(labels) != set(SEMANTIC_COLORS):

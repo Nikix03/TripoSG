@@ -116,6 +116,37 @@ namespace Nikix.Aethryx
                 $"Humanoid {(animator != null && animator.avatar != null && animator.avatar.isHuman)}.");
         }
 
+        [MenuItem("Tools/AETHRYX/Aplicar materiales Toon")]
+        public static void ApplyToonToSelection()
+        {
+            var root = Selection.activeGameObject;
+            if (root == null) return;
+            var shader = Shader.Find("AETHRYX/Toon");
+            if (shader == null || ShaderUtil.ShaderHasError(shader))
+                throw new InvalidOperationException("No se pudo preparar el shader AETHRYX/Toon.");
+            if (!AssetDatabase.IsValidFolder("Assets/AETHRYX")) AssetDatabase.CreateFolder("Assets", "AETHRYX");
+            var folder = AssetDatabase.GenerateUniqueAssetPath("Assets/AETHRYX/Toon");
+            AssetDatabase.CreateFolder("Assets/AETHRYX", Path.GetFileName(folder));
+            var converted = new Dictionary<Material, Material>();
+            foreach (var renderer in root.GetComponentsInChildren<Renderer>(true))
+            {
+                Undo.RecordObject(renderer, "AETHRYX Toon");
+                renderer.sharedMaterials = renderer.sharedMaterials.Select(previous => {
+                    if (previous == null) return null;
+                    if (converted.TryGetValue(previous, out var result)) return result;
+                    result = new Material(shader);
+                    if (previous.HasProperty("_Color")) result.color = previous.color;
+                    if (previous.HasProperty("_MainTex")) result.mainTexture = previous.mainTexture;
+                    if (previous.IsKeywordEnabled("_ALPHATEST_ON") && previous.HasProperty("_Cutoff"))
+                        result.SetFloat("_Cutoff", previous.GetFloat("_Cutoff"));
+                    AssetDatabase.CreateAsset(result, folder + "/toon-" + converted.Count + ".mat");
+                    converted.Add(previous, result);
+                    return result;
+                }).ToArray();
+            }
+            AssetDatabase.SaveAssets();
+        }
+
         public static GameObject Import(string path)
         {
             var file = new Binary(path);

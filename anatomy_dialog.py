@@ -19,7 +19,8 @@ from aethryx_anatomy import (
 from aethryx_engines import suggest_anatomical_points
 from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
 from aethryx_reference import (
-    SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, reference_silhouette, segment_anime_reference,
+    SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, profile_opposite,
+    reference_silhouette, segment_anime_reference,
     silhouette_calibration,
 )
 from proportion_dialog import ProportionDialog
@@ -66,6 +67,7 @@ class AnatomyDialog(tk.Toplevel):
         self.image_frame = None
         self.template_pixels = None
         self.side = tk.BooleanVar(value=False)
+        self.side_manual = False
         self.overlay = tk.BooleanVar(value=True)
         self.view_label = tk.StringVar(value=VIEW_LABELS["front"])
         self.pose_label = tk.StringVar()
@@ -378,6 +380,7 @@ class AnatomyDialog(tk.Toplevel):
         if self.busy or self.view != "side":
             self.side.set(not self.side.get())
             return
+        self.side_manual = True
         if "calibration" in view:
             self._apply_calibration(*view["calibration"])
         elif "projection" in view:
@@ -634,6 +637,10 @@ class AnatomyDialog(tk.Toplevel):
             for name, (calibration, found) in results.items():
                 view = self.views[name]
                 if calibration and "projection" not in view:
+                    if name == "side" and not self.side_manual:
+                        opposite = profile_opposite(found, self.images[name].width)
+                        if opposite is not None:
+                            self.side.set(opposite)
                     center, crown = calibration
                     view["calibration"] = [center, crown]
                     view["projection"] = orthographic_projection(
@@ -678,6 +685,7 @@ class AnatomyDialog(tk.Toplevel):
             "template": self.template_path, "vertex_indices": indices, "views": views,
             "palette": deepcopy(self.palette), "pose_links": self.pose_links.copy(),
             "side_opposite": self.side.get(),
+            "side_manual": self.side_manual,
             "profile": self.profile.get(),
             "bundled_template": bundled,
             "smoothing": .008 if bundled else 0,
@@ -756,6 +764,7 @@ class AnatomyDialog(tk.Toplevel):
         self.profile.set(profile if template_path == str(BUNDLED_BODY) and profile in BODY_PROFILES else "Personalizado")
         self.pose_links = {vertex: joint for vertex, joint in pose_links.items() if vertex in indices}
         self.side.set(data.get("side_opposite", views["side"].get("projection", [[0, 0, -1]])[0][2] > 0))
+        self.side_manual = data.get("side_manual", "side_opposite" in data)
         for key, var in self.factors.items():
             var.set(data.get("proportions", {}).get(key, 1))
         self._invalidate_comparison()

@@ -2,14 +2,20 @@
 
 from dataclasses import dataclass
 import json
+import math
 from queue import Empty, Queue
 import re
 from threading import Thread
 from tkinter import filedialog, messagebox, ttk
 import tkinter as tk
 
-from aethryx_modular import ModularAvatar, apply_material, write_new_glb
-from aethryx_ollama import OllamaProvider
+import numpy as np
+
+from aethryx_anatomy import blocking_geometry_issues, validate_deformation
+from aethryx_anime import hair_locks
+from aethryx_modular import (BODY, EYES, ModularAvatar, apply_material, facial_vertices,
+                            fit_garment_with_clearance, recolor_iris, write_new_glb)
+from aethryx_ollama import LOCAL_ACTIONS, OllamaProvider
 from aethryx_tools import execute_tool, tool_catalog
 
 
@@ -18,32 +24,105 @@ class ScenePlan:
     action: str
     nodes: tuple[str, ...]
     color: str | None = None
+    value: float | None = None
+
+    @property
+    def parameter(self):
+        return self.color or (str(self.value) if self.value is not None else "")
 
 
-def plan_scene_command(action, selection, nodes, color=""):
-    if action not in ("ocultar", "mostrar", "color_base"):
+def plan_scene_command(action, selection, nodes, parameter=""):
+    if action not in LOCAL_ACTIONS:
         raise ValueError("Comando local desconocido.")
     selected = tuple(dict.fromkeys(selection))
     if not selected or not set(selected).issubset(nodes):
         raise ValueError("Selecciona objetos de la escena activa.")
-    if action == "color_base" and not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
-        raise ValueError("El color requiere el formato #RRGGBB.")
-    return ScenePlan(action, selected, color if action == "color_base" else None)
+    if action in ("color_base", "color_iris"):
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", parameter):
+            raise ValueError("El color requiere el formato #RRGGBB.")
+        if action == "color_iris" and not set(selected).issubset(EYES):
+            raise ValueError("El cambio de iris requiere seleccionar ojos.")
+        return ScenePlan(action, selected, parameter)
+    ranges = {"altura": (.80, 1.20), "nariz": (.75, 1.25), "longitud_cabello": (0., 1.),
+              "holgura_ropa": (.003, .06)}
+    if action in ranges:
+        low, high = ranges[action]
+        try:
+            value = float(parameter.replace(",", "."))
+        except ValueError:
+            raise ValueError(f"Introduce un valor numérico entre {low} y {high}.") from None
+        if not math.isfinite(value) or not low <= value <= high:
+            raise ValueError(f"Introduce un valor entre {low} y {high}.")
+        if action != "holgura_ropa" and selected != (BODY,):
+            raise ValueError("Selecciona el cuerpo base para preparar este cambio.")
+        if action == "holgura_ropa" and (len(selected) != 1 or not selected[0].startswith("prenda-") or BODY not in nodes):
+            raise ValueError("Selecciona una prenda ajustable en una escena con cuerpo base.")
+        return ScenePlan(action, selected, value=value)
+    return ScenePlan(action, selected)
 
 
 def apply_scene_plan(plan, scene, hidden):
     avatar = ModularAvatar(scene, hidden)
-    plan = plan_scene_command(plan.action, plan.nodes, avatar.nodes, plan.color or "")
+    plan = plan_scene_command(plan.action, plan.nodes, avatar.nodes, plan.parameter)
     if plan.action == "ocultar":
         avatar.hidden.update(plan.nodes)
     elif plan.action == "mostrar":
         avatar.hidden.difference_update(plan.nodes)
-    else:
+    elif plan.action in ("color_base", "color_iris"):
         for node in plan.nodes:
             mesh = avatar.get(node)
             material = getattr(mesh.visual, "material", None)
             roughness = getattr(material, "roughnessFactor", None)
-            apply_material(mesh, plan.color, roughness=.57 if roughness is None else roughness)
+            if plan.action == "color_iris":
+                recolor_iris(mesh, plan.color, .23 if roughness is None else roughness)
+            else:
+                apply_material(mesh, plan.color, roughness=.57 if roughness is None else roughness)
+            avatar.replace(node, mesh)
+    elif plan.action == "nariz":
+        body = avatar.get(BODY)
+        changed = body.copy()
+        changed.vertices = facial_vertices(body, {"nose": plan.value})
+        issues = blocking_geometry_issues(validate_deformation(body, changed))
+        if issues:
+            raise ValueError("\n".join(issues))
+        avatar.replace(BODY, changed)
+    elif plan.action == "longitud_cabello":
+        pieces = hair_locks(avatar.get(BODY, world=True), plan.value)
+        avatar.hidden.update(node for node in avatar.nodes if node.startswith("cabello") and node not in pieces)
+        for node, mesh in pieces.items():
+            if node in avatar.nodes:
+                mesh.apply_transform(np.linalg.inv(avatar.scene.graph[node][0]))
+            avatar.upsert(node, mesh)
+            avatar.hidden.discard(node)
+    elif plan.action == "holgura_ropa":
+        node = plan.nodes[0]
+        previous = avatar.get(node)
+        garment = previous.metadata.get("aethryx_garment")
+        if not isinstance(garment, dict):
+            raise ValueError("La prenda necesita parámetros de ajuste de Genesis.")
+        new, _ = fit_garment_with_clearance(avatar.get(BODY, world=True), plan.value, garment["thickness"], garment["style"])
+        new.visual.material = previous.visual.material.copy()
+        new.apply_transform(np.linalg.inv(avatar.scene.graph[node][0]))
+        avatar.replace(node, new)
+    elif plan.action == "altura":
+        floor = avatar.get(BODY, world=True).bounds[0, 1]
+        scale = np.eye(4)
+        scale[1, 1], scale[1, 3] = plan.value, floor * (1 - plan.value)
+        for node in avatar.nodes:
+            transform, _ = avatar.scene.graph[node]
+            local = np.linalg.solve(transform, scale @ transform)
+            mesh = avatar.get(node)
+            mesh.apply_transform(local)
+            if node == BODY:
+                levels = mesh.metadata.get("aethryx_face_levels")
+                guide = mesh.metadata.get("aethryx_eye_guide")
+                if isinstance(levels, dict):
+                    mesh.metadata["aethryx_face_levels"] = {
+                        name: float(local[1, 1] * y + local[1, 3]) for name, y in levels.items()
+                    }
+                if isinstance(guide, list) and len(guide) == 4:
+                    center = local[:3, :3] @ guide[:3] + local[:3, 3]
+                    mesh.metadata["aethryx_eye_guide"] = [*center.tolist(), guide[3] * plan.value]
             avatar.replace(node, mesh)
     return avatar
 
@@ -79,7 +158,7 @@ class KiriaDialog(tk.Toplevel):
         ttk.Combobox(bar, textvariable=self.tool, values=names, state="readonly", width=34).pack(side="left")
         edits = ttk.Frame(self, padding=8)
         edits.pack(fill="x")
-        ttk.Combobox(edits, textvariable=self.action, values=("ocultar", "mostrar", "color_base"),
+        ttk.Combobox(edits, textvariable=self.action, values=LOCAL_ACTIONS,
                      state="readonly", width=14).pack(side="left")
         ttk.Entry(edits, textvariable=self.color, width=10).pack(side="left", padx=6)
         ttk.Button(edits, text="Preparar cambio", command=self.prepare).pack(side="left")
@@ -190,7 +269,9 @@ class KiriaDialog(tk.Toplevel):
                 del self.history[:-10]
             if response.proposed_action:
                 self.action.set(response.proposed_action)
-                self.color.set(response.proposed_color)
+                self.color.set(response.proposed_color or (
+                    str(response.proposed_value) if response.proposed_value is not None else ""
+                ))
                 self.prepare()
 
         self._submit(lambda: self.provider.chat(model, prompt, self.selection, previous), receive)
@@ -204,29 +285,36 @@ class KiriaDialog(tk.Toplevel):
         except ValueError as exc:
             self._log("Cambio sin preparar", str(exc))
             return
-        self._log("Cambio preparado", f"{self.plan.action} · {', '.join(self.plan.nodes)} {self.plan.color or ''}")
+        scope = "avatar completo" if self.plan.action == "altura" else ", ".join(self.plan.nodes)
+        self._log("Cambio preparado", f"{self.plan.action} · {scope} {self.plan.parameter}")
         self.apply_button.state(["!disabled"])
 
     def apply(self):
         if self.busy or self.plan is None:
             return
+        plan = self.plan
+        scope = "avatar completo" if plan.action == "altura" else ", ".join(plan.nodes)
         if not messagebox.askyesno(
-                "Confirmar cambio", f"¿Aplicar {self.plan.action} {self.plan.color or ''} a {', '.join(self.plan.nodes)}?",
+                "Confirmar cambio", f"¿Aplicar {plan.action} {plan.parameter} a {scope}?",
                 parent=self):
             return
-        try:
-            avatar = apply_scene_plan(self.plan, self.scene, self.hidden)
-            path = None
-            if self.plan.color:
-                path = filedialog.asksaveasfilename(
-                    parent=self, title="Guardar versión con el nuevo material", defaultextension=".glb",
-                    filetypes=[("GLB", "*.glb")],
-                )
-                if not path:
-                    return
+        path = None
+        if plan.action not in ("ocultar", "mostrar"):
+            path = filedialog.asksaveasfilename(
+                parent=self, title="Guardar versión editada del avatar", defaultextension=".glb",
+                filetypes=[("GLB", "*.glb")],
+            )
+            if not path:
+                return
+
+        def run():
+            avatar = apply_scene_plan(plan, self.scene, self.hidden)
+            if path:
                 write_new_glb(avatar.scene, path)
-        except (OSError, ValueError, KeyError) as exc:
-            self._log("Cambio rechazado", str(exc))
-            return
-        self.result = path, sorted(avatar.hidden), self.plan.action
-        self.destroy()
+            return path, sorted(avatar.hidden), plan.action
+
+        def finish(result):
+            self.result = result
+            self.destroy()
+
+        self._submit(run, finish)

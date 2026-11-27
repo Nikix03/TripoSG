@@ -60,4 +60,11 @@
 - El corte de alto nivel de Trimesh exigía Shapely. Se utilizó su corte de triángulos de bajo nivel y no se instaló nada. Después del render inicial se incorporó la cubierta capilar para cerrar las zonas descubiertas de la nuca.
 - Se confirmó Unity bajo el usuario activo con un proyecto temporal. El paquete embebido de Editor importó dos mallas, 53 huesos, 23 morphs corporales, clip y textura de iris de un GLB v2. Unity informó Humanoid válido y `BakeMesh` midió 0,1628941 unidades al rotar el brazo. En una primera recompilación apareció una referencia en caché a la ruta anterior del código. La prueba posterior del paquete terminó con código 0 y sin ese error. El importador inicial verifica material base Standard. No se instaló SDK ni se ejecutó el exportador FBX. [Guía y prueba del paquete](unity/com.nikix.aethryx/README.md)
 - Pasaron 70 pruebas. La evidencia de Unity corresponde al fixture de cuerpo y ojo, y la evaluación artística con referencias Nikix sigue pendiente.
-- Siguiente tarea concreta. Completar comandos locales de edición y guardar posiciones de articulaciones editadas para la exportación.
+
+## Genesis Quality · Edición, recuperación y materiales toon
+
+- KIRIA prepara cambios de altura, nariz, iris por separado, longitud de cabello y holgura de prendas. Studio exige confirmar la propuesta antes de generar una escena editada. Ollama sigue pendiente de una inferencia real con un modelo local.
+- Vista de pose permite ajustar el reposo de cada articulación, mezclar dos expresiones y reproducir una secuencia de visemas especificada por el usuario. El ajuste de reposo se conserva en el GLB articulado. El asistente multivista puede orientar la vista lateral cuando detecta una separación suficiente entre nariz y oreja, con corrección manual.
+- Studio escribe copias de recuperación de sesiones sin guardar en LocalAppData. La prueba en Tk comprobó que abrir una copia conserva la anterior y recupera la sesión como proyecto sin nombre. También verificó el ajuste de reposo de un antebrazo.
+- Pasaron 74 pruebas. Unity 2022.3.22f1 terminó la prueba del Editor con código 0, Humanoid válido, 53 huesos, 23 morphs y shader toon de AETHRYX aplicado. La evidencia cubre el fixture de cuerpo y ojo, con deformación medida de 0,1628941 unidades en el brazo. El shader se probó en Built-in Render Pipeline. FBX, Poiyomi y VRChat siguen pendientes.
+- La evaluación anatómica multivista requiere las referencias originales de Nikix. Tampoco se ha validado la segmentación anime en ejecución.

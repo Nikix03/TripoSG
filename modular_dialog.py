@@ -421,6 +421,10 @@ class ComponentDialog(tk.Toplevel):
             dialog = PoseDialog(self, self.avatar.scene, self.avatar.hidden)
             self.wait_window(dialog)
             self.grab_set()
+            if dialog.result is not None:
+                self.avatar = ModularAvatar(dialog.result, self.avatar.hidden)
+                self.edited = True
+                self.status.set("Ajustes del esqueleto preparados para guardar y exportar.")
         except (ValueError, RuntimeError) as exc:
             messagebox.showerror("Vista de pose", str(exc), parent=self)
 

@@ -29,7 +29,10 @@ from anatomy_dialog import AnatomyDialog
 from aethryx_modular import BODY, visible_body_faces
 from modular_dialog import ComponentDialog
 from kiria_dialog import KiriaDialog
-from studio_project import validate_settings, validate_glb, save_project, load_project, newer_recovery, recovery_path
+from studio_project import (
+    validate_settings, validate_glb, save_project, load_project, newer_recovery, recovery_path,
+    unsaved_recovery_directory, unsaved_recovery_path,
+)
 from aethryx_engines import engine_catalog, prepare_character_alpha
 from aethryx_tools import analyze_project_diagnostics, execute_tool, tool_catalog
 from aethryx_viewer import viewer_catalog
@@ -84,6 +87,7 @@ class AethryxStudio(tk.Tk):
         self.seed = tk.IntVar(value=42)
         self.guidance = tk.DoubleVar(value=7.0)
         self.project_path = None
+        self._unsaved_recovery = unsaved_recovery_path()
         self._recovery_signature = None
         self.reference_regions = []
         self.anatomy_setup = None
@@ -122,6 +126,7 @@ class AethryxStudio(tk.Tk):
         self.bind("<Control-y>", lambda event: self.redo_scene_change())
         self._load_reference_preview()
         self._refresh_system_status()
+        self._recovery_signature = self._project_signature(self._project_fields())
         self.after(45000, self._auto_recovery)
 
         if os.path.isfile(self.output_path.get()):
@@ -189,6 +194,7 @@ class AethryxStudio(tk.Tk):
         file_menu = tk.Menu(self.main_menu, **menu_colors)
         file_menu.add_command(label="Nuevo proyecto (.aeth)", accelerator="Ctrl+N", command=self.new_project)
         file_menu.add_command(label="Abrir proyecto...", accelerator="Ctrl+O", command=self.open_project)
+        file_menu.add_command(label="Recuperar sesión sin guardar…", command=self.recover_unsaved_session)
         file_menu.add_command(label="Guardar proyecto", accelerator="Ctrl+S", command=self.save_current_project)
         file_menu.add_command(label="Guardar proyecto como...", command=lambda: self.save_current_project(True))
         file_menu.add_separator()
@@ -540,26 +546,40 @@ class AethryxStudio(tk.Tk):
             return
         if not messagebox.askyesno("Nuevo proyecto", "¿Crear un proyecto nuevo? Guarda antes la configuración que quieras conservar. Los archivos existentes no se eliminan."):
             return
+        self._save_recovery_if_changed()
         self._clear_scene()
         self.project_path = None
-        self._recovery_signature = None
+        self._unsaved_recovery = unsaved_recovery_path()
         self.reference_regions = []
         self.anatomy_setup = None
         self.image_path.set("")
         self.output_path.set("")
         self.steps.set(50); self.faces.set(-1); self.seed.set(42); self.guidance.set(7.0)
         self._load_reference_preview()
+        self._recovery_signature = self._project_signature(self._project_fields())
         self.title(PRODUCT_NAME)
         self.status.set("Proyecto nuevo.")
 
-    def open_project(self):
+    def recover_unsaved_session(self):
+        root = unsaved_recovery_directory()
+        if not root.is_dir():
+            messagebox.showinfo("Recuperación", "Todavía no existen sesiones locales de recuperación.")
+            return
+        path = filedialog.askopenfilename(
+            initialdir=str(root), title="Recuperar una sesión sin guardar", filetypes=[("Proyecto AETHRYX", "*.aeth")],
+        )
+        if path:
+            self.open_project(path, as_unsaved=True)
+
+    def open_project(self, path=None, *, as_unsaved=False):
         if not self._workspace_available():
             return
-        path = filedialog.askopenfilename(filetypes=[("Proyecto AETHRYX", "*.aeth")])
+        if path is None:
+            path = filedialog.askopenfilename(filetypes=[("Proyecto AETHRYX", "*.aeth")])
         if not path:
             return
         try:
-            recovery = newer_recovery(path)
+            recovery = None if as_unsaved else newer_recovery(path)
             chosen = (
                 recovery if recovery and messagebox.askyesno(
                     "Recuperación disponible", "Hay una copia más reciente. ¿Abrirla en el proyecto activo?"
@@ -576,8 +596,11 @@ class AethryxStudio(tk.Tk):
                 raise ValueError("Formato de malla no compatible.")
             if not messagebox.askyesno("Abrir proyecto", "¿Reemplazar la configuración actual? Los archivos existentes se conservan."):
                 return
+            if not self.project_path or not self._same_path(self.project_path, path):
+                self._save_recovery_if_changed()
             self._clear_scene()
-            self.project_path = path
+            self.project_path = None if as_unsaved else path
+            self._unsaved_recovery = unsaved_recovery_path()
             self.reference_regions = data["references"]
             self.anatomy_setup = data["anatomy_setup"]
             self.avatar_nodes = data.get("avatar_nodes") or build_avatar_scene_graph(
@@ -588,7 +611,7 @@ class AethryxStudio(tk.Tk):
             for key in ("steps", "faces", "seed", "guidance"):
                 getattr(self, key).set(data["settings"][key])
             self._load_reference_preview()
-            self.title(f"{PRODUCT_NAME} — {os.path.basename(path)}")
+            self.title(f"{PRODUCT_NAME} — Sesión recuperada" if as_unsaved else f"{PRODUCT_NAME} — {os.path.basename(path)}")
             fields = self._project_fields()
             fields.update(model=data["model"] or None, hidden_components=sorted(data["hidden_components"]))
             self._recovery_signature = self._project_signature(fields)
@@ -635,12 +658,15 @@ class AethryxStudio(tk.Tk):
 
     def _save_recovery_if_changed(self):
         try:
-            if (self.project_path and not Path(self.project_path).stem.endswith(".recovery")
-                    and not (self.generation_active or self.model_loading)):
+            if not (self.generation_active or self.model_loading):
+                if self.project_path and Path(self.project_path).stem.endswith(".recovery"):
+                    return
                 fields = self._project_fields()
                 signature = self._project_signature(fields)
                 if signature != self._recovery_signature:
-                    snapshot = recovery_path(self.project_path)
+                    snapshot = recovery_path(self.project_path) if self.project_path else self._unsaved_recovery
+                    if not self.project_path:
+                        snapshot.parent.mkdir(parents=True, exist_ok=True)
                     save_project(snapshot, **fields)
                     self._recovery_signature = signature
                     self.append_log(f"Recuperación local guardada en {snapshot.name}.")

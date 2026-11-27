@@ -8,6 +8,9 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 _ROOT = "http://127.0.0.1:11434"
 _MAX_RESPONSE = 1024 * 1024
+LOCAL_ACTIONS = (
+    "ocultar", "mostrar", "color_base", "color_iris", "altura", "nariz", "longitud_cabello", "holgura_ropa",
+)
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -20,6 +23,7 @@ class LocalChatResult:
     text: str
     proposed_action: str | None = None
     proposed_color: str = ""
+    proposed_value: float | None = None
 
 
 def decode_chat(payload):
@@ -38,12 +42,13 @@ def decode_chat(payload):
     if not isinstance(function, dict) or function.get("name") != "proponer_cambio":
         raise ValueError("El modelo devolvió una herramienta fuera del registro.")
     arguments = function.get("arguments")
-    if not isinstance(arguments, dict) or set(arguments) - {"action", "color"}:
+    if not isinstance(arguments, dict) or set(arguments) - {"action", "color", "value"}:
         raise ValueError("La propuesta contiene argumentos inválidos.")
     action, color = arguments.get("action"), arguments.get("color", "")
-    if action not in ("ocultar", "mostrar", "color_base") or not isinstance(color, str):
+    value = arguments.get("value")
+    if action not in LOCAL_ACTIONS or not isinstance(color, str) or (value is not None and type(value) not in (int, float)):
         raise ValueError("El modelo devolvió una acción desconocida.")
-    return LocalChatResult(text, action, color)
+    return LocalChatResult(text, action, color, value)
 
 
 class OllamaProvider:
@@ -101,12 +106,13 @@ class OllamaProvider:
         messages.append({"role": "user", "content": message})
         tools = [] if not selected else [{
             "type": "function", "function": {
-                "name": "proponer_cambio", "description": "Prepara mostrar, ocultar o cambiar color de los objetos seleccionados.",
+                "name": "proponer_cambio", "description": "Prepara una edición del avatar seleccionado. No ejecuta cambios.",
                 "parameters": {
                     "type": "object", "additionalProperties": False, "required": ["action"],
                     "properties": {
-                        "action": {"type": "string", "enum": ["ocultar", "mostrar", "color_base"]},
-                        "color": {"type": "string", "description": "Para color_base, un valor #RRGGBB."},
+                        "action": {"type": "string", "enum": list(LOCAL_ACTIONS)},
+                        "color": {"type": "string", "description": "Para color_base y color_iris, valor #RRGGBB."},
+                        "value": {"type": "number", "description": "Factores para la altura y nariz, longitud de cabello u holgura de ropa."},
                     },
                 },
             },

@@ -23,9 +23,12 @@ public static class AethryxBridgeSmoke {
             if (texture == null) throw new InvalidOperationException("Missing eye texture.");
             var clips = AssetDatabase.FindAssets("t:AnimationClip", new[]{"Assets/AETHRYX"}).Length;
             if (clips < 1) throw new InvalidOperationException("Missing animation clip.");
+            Selection.activeGameObject = root;
+            AethryxImporter.ApplyToonToSelection();
+            if (body.sharedMaterial.shader.name != "AETHRYX/Toon") throw new InvalidOperationException("Missing Toon.");
             Debug.Log("AETHRYX_SMOKE renderer=" + renderers.Length + " bones=" + body.bones.Length +
                 " morphs=" + body.sharedMesh.blendShapeCount + " delta=" + displacement +
-                " human=" + (animator != null && animator.avatar.isHuman) + " clips=" + clips);
+                " human=" + (animator != null && animator.avatar.isHuman) + " clips=" + clips + " toon=True");
             EditorApplication.Exit(0);
         } catch (Exception exc) {
             Debug.LogException(exc);

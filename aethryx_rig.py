@@ -12,7 +12,7 @@ import trimesh
 from aethryx_modular import BODY, EYES, ModularAvatar, head_frame
 
 
-def humanoid_skeleton(body, eyes=None):
+def humanoid_skeleton(body, eyes=None, offsets=None):
     lower, upper = body.bounds
     width, height, depth = upper - lower
     if height <= 0 or width <= 0 or depth <= 0:
@@ -53,7 +53,16 @@ def humanoid_skeleton(body, eyes=None):
                        reach + .031, .592 - .003 * index, offset + .042)
             side_joint(finger + "Distal", side + finger + "Intermediate",
                        reach + .054, .579 - .003 * index, offset + .072)
-    return names, np.asarray(parents, dtype=np.intp), np.asarray(positions, dtype=np.float64)
+    positions = np.asarray(positions, dtype=np.float64)
+    if offsets:
+        if not isinstance(offsets, dict) or set(offsets) - set(names):
+            raise ValueError("Los ajustes contienen una articulación desconocida.")
+        for name, values in offsets.items():
+            delta = np.asarray(values, dtype=float)
+            if delta.shape != (3,) or not np.isfinite(delta).all() or np.any(np.abs(delta) > .08):
+                raise ValueError("Desplazamiento de articulación fuera del intervalo ±0,08 de la altura.")
+            positions[names.index(name)] += delta * height
+    return names, np.asarray(parents, dtype=np.intp), positions
 
 
 def skin_weights(vertices, skeleton, influences=4):
@@ -272,7 +281,7 @@ def export_rigged_avatar(scene, path, influences=4):
     body = parts[BODY]
     if not body.is_volume:
         raise ValueError("La exportación articulada requiere un cuerpo cerrado y orientado.")
-    skeleton = humanoid_skeleton(body, parts)
+    skeleton = humanoid_skeleton(body, parts, scene.metadata.get("aethryx_joint_offsets"))
     names, parents, bind = skeleton
     body_joints, body_weights = skin_weights(np.asarray(body.vertices), skeleton, influences)
     tree = cKDTree(body.vertices)
@@ -340,13 +349,14 @@ def export_rigged_avatar(scene, path, influences=4):
 
 
 class PosePreview:
-    def __init__(self, scene, influences=4, *, simplify=False):
+    def __init__(self, scene, influences=4, *, simplify=False, offsets=None):
         avatar = ModularAvatar(scene)
         if BODY not in avatar.nodes:
             raise ValueError("Crea primero el cuerpo base.")
         originals = {node: avatar.get(node, world=True) for node in avatar.nodes}
         body = originals[BODY]
-        self.skeleton = humanoid_skeleton(body, originals)
+        stored = scene.metadata.get("aethryx_joint_offsets") if offsets is None else offsets
+        self.skeleton = humanoid_skeleton(body, originals, stored)
         joints, weights = skin_weights(np.asarray(body.vertices), self.skeleton, influences)
         tree = cKDTree(np.asarray(body.vertices).copy())
         names = self.skeleton[0]
@@ -384,14 +394,17 @@ class PosePreview:
     def evaluate(self, rotations, expression=None, strength=0):
         if not 0 <= strength <= 1:
             raise ValueError("La intensidad de expresión requiere un valor de 0 a 1.")
+        blend = expression if isinstance(expression, dict) else ({expression: strength} if expression else {})
+        if set(blend) - set(self.morphs) or any(not 0 <= weight <= 1 for weight in blend.values()):
+            raise ValueError("La mezcla contiene un morph o una intensidad inválidos.")
         matrices = pose_matrices(self.skeleton, rotations)
         transformed = {}
         for name, mesh in self.parts.items():
             vertices = np.asarray(mesh.vertices)
-            if name == BODY and expression:
-                vertices = vertices + self.morphs[expression] * strength
-            elif name in self.accessory_morphs and expression in self.accessory_morphs[name]:
-                vertices = vertices + self.accessory_morphs[name][expression] * strength
+            targets = self.morphs if name == BODY else self.accessory_morphs.get(name, {})
+            for key, weight in blend.items():
+                if key in targets and weight:
+                    vertices = vertices + targets[key] * weight
             binding = self.binding[name]
             if isinstance(binding, tuple):
                 transformed[name] = deform_pose(vertices, *binding, matrices)

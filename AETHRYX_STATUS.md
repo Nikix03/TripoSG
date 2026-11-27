@@ -1,5 +1,14 @@
 # Estado de AETHRYX Studio
 
+## Genesis Quality · Edición, recuperación y materiales toon
+
+- KIRIA prepara cambios de altura, nariz, iris por separado, longitud de cabello y holgura de prendas. Studio exige confirmar la propuesta antes de generar una escena editada. Ollama sigue pendiente de una inferencia real con un modelo local.
+- Vista de pose permite ajustar el reposo de cada articulación, mezclar dos expresiones y reproducir una secuencia de visemas especificada por el usuario. El ajuste de reposo se conserva en el GLB articulado. El asistente multivista puede orientar la vista lateral cuando detecta una separación suficiente entre nariz y oreja, con corrección manual.
+- Studio escribe copias de recuperación de sesiones sin guardar en LocalAppData. La prueba en Tk comprobó que abrir una copia conserva la anterior y recupera la sesión como proyecto sin nombre. También verificó el ajuste de reposo de un antebrazo.
+- Pasaron 74 pruebas. Unity 2022.3.22f1 terminó la prueba del Editor con código 0, Humanoid válido, 53 huesos, 23 morphs y shader toon de AETHRYX aplicado. La evidencia cubre el fixture de cuerpo y ojo, con deformación medida de 0,1628941 unidades en el brazo. El shader se probó en Built-in Render Pipeline. FBX, Poiyomi y VRChat siguen pendientes.
+- La evaluación anatómica multivista requiere las referencias originales de Nikix. Tampoco se ha validado la segmentación anime en ejecución.
+
+
 ## Genesis Quality · Recuperación
 
 - Se conservaron y validaron los cambios locales del conector Ollama. KIRIA permite buscar modelos locales, conversar cuando hay un servicio activo y revisar un cambio estructurado antes de aplicarlo. La prueba controlada pasó junto con las 67 pruebas anteriores. En este entorno, el servicio local rechazó la conexión.
