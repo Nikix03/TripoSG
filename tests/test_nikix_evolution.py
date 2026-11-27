@@ -9,7 +9,8 @@ import trimesh
 from aethryx_anime import nikix_preset
 from aethryx_anatomy import semantic_visual_hull
 from aethryx_materials import unwrap_uv, uv_quality
-from aethryx_modular import BODY, body_contacts, fit_component_to_patch, refine_component_fit, review_generated_hair
+from aethryx_modular import (BODY, _repair_hair_seams, body_contacts, fit_component_to_patch,
+                           refine_component_fit, review_generated_hair)
 from aethryx_rig import profile_parts
 from studio_project import generation_recovery_path, load_project, save_project
 from aethryx_tools import execute_tool
@@ -59,6 +60,16 @@ class NikixEvolutionTests(unittest.TestCase):
         self.assertTrue(report["cleanup_kept"])
         self.assertEqual(report["discarded_islands"], 1)
         self.assertFalse(any(overlap.values()))
+
+    def test_local_seam_repair_closes_a_small_hole_without_editing_source(self):
+        closed = trimesh.creation.icosphere(subdivisions=1)
+        open_piece = closed.copy()
+        open_piece.update_faces(np.arange(1, len(closed.faces)))
+        patched = _repair_hair_seams(open_piece)
+        self.assertIsNotNone(patched)
+        self.assertTrue(patched.is_volume)
+        self.assertEqual(len(patched.faces), len(closed.faces))
+        self.assertFalse(open_piece.is_watertight)
 
     def test_generation_recovery_uses_atomic_project_manifest(self):
         with TemporaryDirectory() as folder, patch.dict("os.environ", {"LOCALAPPDATA": folder}):

@@ -530,6 +530,22 @@ def review_generated_hair(body, guide, original):
                 (not fitted.is_volume or candidate.is_volume))
     result = candidate if accepted else fitted
     final_contacts = contacts if accepted else initial_contacts
+    seam_repair = False
+    if accepted and not result.is_volume and getattr(original.visual, "kind", None) is None:
+        repaired = _repair_hair_seams(result)
+        if repaired is not None:
+            repaired_contacts = body_contacts(body, repaired)
+            repaired_silhouette = hair_silhouette_overlap(fitted, repaired)
+            repaired_guide = hair_silhouette_overlap(guide, repaired)
+            repaired_coverage = coverage(repaired)
+            if (min(repaired_silhouette.values()) >= .94
+                    and all(repaired_guide[key] + .025 >= value for key, value in guide_before.items())
+                    and (before is None or repaired_coverage + .025 >= before)
+                    and all(repaired_contacts[key] <= value for key, value in final_contacts.items())):
+                repaired.metadata.update(result.metadata)
+                result, final_contacts = repaired, repaired_contacts
+                retained, guide_after, after = repaired_silhouette, repaired_guide, repaired_coverage
+                seam_repair = True
     incidence = np.bincount(result.edges_unique_inverse)
     boundary_edges = int(np.count_nonzero(incidence == 1))
     result.metadata["aethryx_hair_review"] = {
@@ -539,9 +555,32 @@ def review_generated_hair(body, guide, original):
         "nonmanifold_edges": int(np.count_nonzero(incidence > 2)),
         "silhouette_retained": retained, "guide_before": guide_before, "guide_after": guide_after,
         "crown_coverage_before": before, "crown_coverage_after": after,
-        "closed_volume": bool(result.is_volume), **final_contacts,
+        "closed_volume": bool(result.is_volume), "seam_repair_kept": seam_repair, **final_contacts,
     }
     return result, final_contacts
+
+
+def _repair_hair_seams(mesh):
+    """Try a local seam repair on untextured geometry and reject surface crossings."""
+    import pymeshlab
+    from aethryx_anatomy import _triangle_intersections
+
+    session = pymeshlab.MeshSet()
+    session.add_mesh(pymeshlab.Mesh(np.asarray(mesh.vertices), np.asarray(mesh.faces, dtype=np.int32)))
+    try:
+        session.meshing_repair_non_manifold_edges(method="Remove Faces")
+        session.meshing_repair_non_manifold_vertices()
+        session.meshing_close_holes(maxholesize=10, selfintersection=True)
+    except pymeshlab.PyMeshLabException:
+        return None
+    repaired = session.current_mesh()
+    result = trimesh.Trimesh(repaired.vertex_matrix(), repaired.face_matrix(), process=False)
+    result.fix_normals(multibody=True)
+    if not result.is_volume or abs(len(result.faces) - len(mesh.faces)) > max(8, len(mesh.faces) * .02):
+        return None
+    if _triangle_intersections(result, limit=1):
+        return None
+    return result
 
 
 GARMENT_STYLES = {"top": (.53, .735), "falda": (.32, .55), "vestido": (.31, .735)}

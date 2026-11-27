@@ -1,5 +1,12 @@
 # Estado de AETHRYX Studio
 
+## Genesis Architect · Reparación localizada y FBX V6
+
+- Se añadió una reparación localizada de costuras en una copia sin texturas. Solo acepta un volumen orientado, sin cruces detectados, dentro del límite de caras y sin pérdida sustancial de silueta o cobertura. Cerró el agujero triangular de la regresión. El candidato de la malla TripoSG se descartó, y el borrador conservó 62 contactos, 7 vértices interiores y 10 aristas no manifold.
+- El perfil V6 PC Optimized pasó el ensayo completo en el proyecto temporal de Unity con el SDK oficial. El GLB importado conservó 36 renderers y 69.702 triángulos. Tras la ida y vuelta a FBX permanecieron 53 articulaciones, 51 huesos con peso corporal, 57.679 entradas de peso, 23 morphs y 15 visemas. Se verificaron el movimiento unilateral del ojo, la deformación del visema aa y el pivote PhysBone del aro. VRChat calificó VeryPoor por mallas con skinning y slots de material. No se publicó un avatar.
+- Pasaron 90 pruebas.
+
+
 ## Genesis Architect · Geometría, volumen semántico y V6
 
 - Se retomó desde `91f0c68`. La limpieza del mismo GLB TripoSG retiró 56 caras degeneradas o duplicadas y 81 islas. Pasó de 16.000 a 15.082 caras, de 69 a 62 contactos y de 9 a 7 vértices interiores. Conservó 98,62 % frontal, 96,46 % lateral y 98,65 % superior de la silueta ajustada. La cobertura de coronilla pasó de 79,82 % a 79,67 %. La malla conserva 10 aristas no manifold y sigue como borrador oculto. [Ensayo](test_assets/anime/project-nikix/ajuste-capilar-architect.png)
