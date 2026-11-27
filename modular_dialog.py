@@ -16,12 +16,12 @@ from aethryx_anime import hair_locks, nikix_preset, sculpted_body, sculpted_face
 from aethryx_bridge import inspect_avatar_glb
 from aethryx_materials import (CHANNELS, RESOLUTIONS, color_gradient, save_pbr_maps, transform_uv,
                               unwrap_uv, update_pbr_maps, uv_quality)
-from aethryx_rig import export_rigged_avatar, preview_expression, preview_pose
+from aethryx_rig import EXPORT_PROFILES, export_rigged_avatar, preview_expression, preview_pose
 from pose_dialog import PoseDialog
 from aethryx_modular import (
     BODY, BODY_PREVIEW_BANDS, EYES, FACE_CONTROLS, ModularAvatar, anime_body, apply_material, avatar_eye,
     body_contacts, facial_vertices, fit_component_to_patch, fit_footwear, fit_garment_with_clearance,
-    fit_hair, fitted_eyelids, head_frame,
+    fit_hair, fitted_eyelids, head_frame, refine_component_fit,
     mouth_components, recolor_iris, regional_hair, write_new_glb,
 )
 
@@ -54,7 +54,8 @@ class ComponentDialog(tk.Toplevel):
             (("Perfil anime…", self.create_profile), ("Párpados", self.eyelids), ("Interior bucal", self.mouth),
              ("Cabello por regiones…", self.hair_regions), ("Ocultar región corporal…", self.toggle_body_band)),
             (("Cuerpo anime v2…", self.create_sculpted_body), ("Mechones independientes…", self.independent_hair)),
-            (("Preset Nikix v3", lambda: self.create_nikix(3)), ("Preset Nikix v4", self.create_nikix),
+            (("Preset Nikix v3", lambda: self.create_nikix(3)), ("Preset Nikix v4", lambda: self.create_nikix(4)),
+             ("Preset Nikix v5", lambda: self.create_nikix(5)),
              ("Ajustar malla a pieza…", self.fit_generated)),
             (("Mapas PBR…", self.pbr), ("Diagnóstico UV…", self.diagnose_uv), ("Ajustar UV…", self.edit_uv),
              ("Generar atlas UV", self.generate_uv)),
@@ -173,8 +174,8 @@ class ComponentDialog(tk.Toplevel):
         node = f"{target}-ajuste"
 
         def align():
-            candidate, report = fit_component_to_patch(self._body(), self.avatar.get(target, world=True),
-                                                       load_body_template(Path(path)))
+            fit = refine_component_fit if target.startswith(("cabello", "hair")) else fit_component_to_patch
+            candidate, report = fit(self._body(), self.avatar.get(target, world=True), load_body_template(Path(path)))
             self.avatar.add(node, candidate)
             if any(report.values()) or not candidate.is_volume:
                 self.avatar.hidden.add(node)
@@ -431,6 +432,13 @@ class ComponentDialog(tk.Toplevel):
                 messagebox.showerror("Guardar conjunto", str(exc), parent=self)
 
     def export_rig(self):
+        names = tuple(EXPORT_PROFILES)
+        selection = simpledialog.askinteger(
+            "Perfil de exportación", "\n".join(f"{index}. {name}" for index, name in enumerate(names, 1)),
+            initialvalue=1, minvalue=1, maxvalue=len(names), parent=self,
+        )
+        if selection is None:
+            return
         influences = simpledialog.askinteger("Rig humanoide", "Máximo de influencias por vértice.",
                                              initialvalue=4, minvalue=1, maxvalue=4, parent=self)
         if influences is None:
@@ -443,7 +451,7 @@ class ComponentDialog(tk.Toplevel):
                     raise ValueError("Elige un archivo GLB nuevo.")
                 with TemporaryDirectory(dir=destination.parent) as folder:
                     staged = Path(folder) / "avatar.glb"
-                    report = export_rigged_avatar(self.avatar.scene, staged, influences)
+                    report = export_rigged_avatar(self.avatar.scene, staged, influences, profile=names[selection - 1])
                     checked = inspect_avatar_glb(staged)
                     if not checked["valid_native_glb"]:
                         raise ValueError("\n".join(checked["errors"]))

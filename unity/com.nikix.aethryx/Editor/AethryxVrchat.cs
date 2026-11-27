@@ -110,12 +110,18 @@ namespace Nikix.Aethryx
             var statsType = calculate.GetParameters()[2].ParameterType;
             var rating = statsType.GetMethod("GetPerformanceRatingForCategory");
             if (rating == null) throw new NotSupportedException("Clasificación de VRChat SDK ausente.");
-            var overall = Enum.Parse(rating.GetParameters()[0].ParameterType, "Overall");
+            var category = rating.GetParameters()[0].ParameterType;
+            var overall = Enum.Parse(category, "Overall");
             string GetRating(bool mobile)
             {
                 var stats = Activator.CreateInstance(statsType, new object[] { mobile });
                 calculate.Invoke(null, new[] { (object)root.name, root, stats, mobile });
-                return rating.Invoke(stats, new[] { overall }).ToString();
+                var blockers = Enum.GetValues(category).Cast<object>()
+                    .Where(value => !Equals(value, overall) && !value.ToString().EndsWith("CategoryCount") &&
+                        string.Equals(rating.Invoke(stats, new[] { value }).ToString(), "VeryPoor",
+                                      StringComparison.OrdinalIgnoreCase))
+                    .Select(value => value.ToString());
+                return rating.Invoke(stats, new[] { overall }) + " [" + string.Join(", ", blockers) + "]";
             }
             var result = "PC=" + GetRating(false) + " mobile=" + GetRating(true);
             Debug.Log("AETHRYX_VRCHAT_PERFORMANCE " + result);

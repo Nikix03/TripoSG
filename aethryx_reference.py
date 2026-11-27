@@ -126,6 +126,44 @@ def semantic_reference_regions(image, mask, colors=SEE_THROUGH_COLORS):
     return regions
 
 
+def refine_visible_mask(image, mask, silhouette):
+    """Use foreground and face chroma to propose exposed skin on visible pixels."""
+    if image.size != mask.size or image.size != silhouette.size:
+        raise ValueError("Las tres imágenes deben tener la misma resolución.")
+    labels = np.asarray(mask.convert("RGB")).copy()
+    foreground = np.asarray(silhouette.convert("L")) >= 128
+    labels[~foreground] = 0
+    lab = cv2.cvtColor(np.asarray(image.convert("RGB")), cv2.COLOR_RGB2LAB).astype(np.float32)
+    face = np.all(labels == SEE_THROUGH_COLORS["face"], axis=2)
+    if face.sum() >= 36:
+        chroma = lab[:, :, 1:]
+        center = np.median(chroma[face], axis=0)
+        distance = np.linalg.norm(chroma - center, axis=2)
+        radius = np.clip(np.quantile(distance[face], .75) * 1.5, 8, 22)
+        unassigned = ~labels.any(axis=2)
+        clothes = np.all(labels == SEE_THROUGH_COLORS["clothing"], axis=2)
+        eligible = foreground & (unassigned | clothes)
+        low_light = np.quantile(lab[:, :, 0][face], .15) - 35
+        exposed = eligible & (distance <= radius) & (lab[:, :, 0] >= low_light)
+        count, regions, stats, _ = cv2.connectedComponentsWithStats(exposed.astype(np.uint8))
+        keep = np.zeros(count, dtype=bool)
+        keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= max(12, foreground.size // 30000)
+        labels[keep[regions]] = SEE_THROUGH_COLORS["body"]
+    return Image.fromarray(labels)
+
+
+def remove_mask_islands(mask, palette, minimum_area):
+    labels = np.asarray(mask.convert("RGB")).copy()
+    for name, color in palette.items():
+        if name != "background":
+            selected = np.all(labels == color, axis=2)
+            count, components, stats, _ = cv2.connectedComponentsWithStats(selected.astype(np.uint8))
+            discard = np.zeros(count, dtype=bool)
+            discard[1:] = stats[1:, cv2.CC_STAT_AREA] < minimum_area
+            labels[discard[components]] = 0
+    return Image.fromarray(labels)
+
+
 def reference_silhouette(image, semantic_mask=None):
     explicit = semantic_mask is not None
     if semantic_mask is not None:

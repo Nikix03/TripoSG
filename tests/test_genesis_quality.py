@@ -12,7 +12,8 @@ from aethryx_bridge import inspect_avatar_glb
 from aethryx_modular import BODY, EYES, anime_body, apply_material, avatar_eye, body_contacts
 from aethryx_rig import PosePreview, export_rigged_avatar
 from aethryx_reference import (AnimeSilhouette, SEE_THROUGH_COLORS, import_see_through_v2,
-                               profile_opposite, semantic_reference_regions)
+                               profile_opposite, refine_visible_mask, remove_mask_islands,
+                               semantic_reference_regions)
 from kiria_dialog import apply_scene_plan, plan_scene_command
 from studio_project import load_project, save_project, unsaved_recovery_path, validate_glb
 
@@ -21,6 +22,22 @@ class GenesisQualityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.body = sculpted_body("Anime femenino")
+
+    def test_visible_skin_refinement_respects_silhouette_and_strong_classes(self):
+        from PIL import Image
+
+        source = Image.new("RGB", (24, 24), "#f4c1a3")
+        mask = Image.new("RGB", source.size)
+        silhouette = Image.new("L", source.size)
+        silhouette.paste(255, (2, 2, 22, 22))
+        mask.paste(SEE_THROUGH_COLORS["face"], (3, 3, 10, 10))
+        mask.paste(SEE_THROUGH_COLORS["eyes"], (4, 4, 6, 6))
+        mask.paste(SEE_THROUGH_COLORS["hair"], (0, 0, 1, 1))
+        refined = refine_visible_mask(source, mask, silhouette)
+        self.assertEqual(refined.getpixel((15, 15)), SEE_THROUGH_COLORS["body"])
+        self.assertEqual(refined.getpixel((4, 4)), SEE_THROUGH_COLORS["eyes"])
+        self.assertEqual(refined.getpixel((0, 0)), (0, 0, 0))
+        self.assertEqual(remove_mask_islands(refined, SEE_THROUGH_COLORS, 5).getpixel((4, 4)), (0, 0, 0))
 
     def test_vtk_viewer_preserves_visible_mesh_instances(self):
         try:

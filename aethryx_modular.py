@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from scipy.spatial import ConvexHull
+from scipy.spatial import ConvexHull, cKDTree
 import trimesh
 from trimesh.visual.material import PBRMaterial
 from trimesh.visual.texture import TextureVisuals
@@ -379,6 +379,91 @@ def fit_component_to_patch(body, patch, generated):
         "uniform_scale": scale, "axes": axes.tolist(), "closed_volume": bool(result.is_volume), **report,
     }
     return result, report
+
+
+def refine_component_fit(body, patch, original):
+    """Search proper axis orientations, then locally clear small body penetrations."""
+    from scipy.spatial.transform import Rotation
+    from pyvista import PolyData
+    from vtkmodules.vtkFiltersCore import vtkImplicitPolyDataDistance
+
+    rest, rest_report = fit_component_to_patch(body, patch, original)
+    reference = np.asarray(patch.vertices)
+    guide = reference[::max(1, len(reference) // 1500)]
+    tree = cKDTree(guide)
+    target = np.quantile(reference, [.02, .98], axis=0)
+    target_size = np.diff(target, axis=0)[0]
+    axes = np.argsort(target_size)[-2:]
+    ranked = []
+    for matrix in Rotation.create_group("O").as_matrix():
+        source = original.copy()
+        transform = np.eye(4)
+        transform[:3, :3] = matrix
+        source.apply_transform(transform)
+        bounds = np.quantile(source.vertices, [.02, .98], axis=0)
+        source_size = np.diff(bounds, axis=0)[0]
+        if np.any(source_size[axes] <= 1e-10):
+            continue
+        scale = float(np.exp(np.log(target_size[axes] / source_size[axes]).mean()))
+        source.vertices = (source.vertices - bounds.mean(axis=0)) * scale + target.mean(axis=0)
+        points = source.vertices[::max(1, len(source.vertices) // 1500)]
+        cost = np.median(tree.query(points)[0]) + np.median(cKDTree(points).query(guide)[0])
+        ranked.append((cost, source, matrix, scale))
+
+    from scipy.sparse import coo_matrix
+    surface = PolyData(body.vertices, np.column_stack((np.full(len(body.faces), 3), body.faces)))
+    distance = vtkImplicitPolyDataDistance()
+    distance.SetInput(surface)
+    best, report = rest, rest_report
+    limit = .04 * body.extents[1]
+    clearance = .003 * body.extents[1]
+    aligned = sorted(ranked, key=lambda row: row[0])[:3]
+    identity = next(row for row in ranked if np.allclose(row[2], np.eye(3)))
+    if all(row is not identity for row in aligned):
+        aligned.append(identity)
+    for cost, source, rotation, scale in aligned:
+        for up in (.02, .04, .06):
+            trial = source.copy()
+            trial.apply_translation([0, up * body.extents[1], 0])
+            points = trial.vertices[::max(1, len(trial.vertices) // 1500)]
+            shifted = np.median(tree.query(points)[0]) + np.median(cKDTree(points).query(guide)[0])
+            if shifted > cost + .035 * body.extents[1]:
+                continue
+            current = body_contacts(body, trial)
+            if current["inside"] + current["contacts"] < report["inside"] + report["contacts"]:
+                best, report = trial, current
+                best.metadata["aethryx_component_fit"] = {
+                    "uniform_scale": scale, "rotation": rotation.tolist(), "crown_lift": up,
+                    "closed_volume": bool(trial.is_volume), **current,
+                }
+    for _, piece, rotation, scale in aligned:
+        initial = piece.vertices.copy()
+        baseline_lengths = piece.edges_unique_length.copy()
+        rows, cols = piece.edges_unique.T
+        edges = coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(len(initial), len(initial))).tocsr()
+        edges = edges + edges.T
+        degree = np.maximum(np.asarray(edges.sum(axis=1)).ravel(), 1)
+        for _ in range(3):
+            moves = np.zeros_like(initial)
+            for index, vertex in enumerate(piece.vertices):
+                closest = [0., 0., 0.]
+                depth = distance.EvaluateFunctionAndGetClosestPoint(vertex, closest)
+                if depth < -1e-8:
+                    moves[index] = (np.asarray(closest) - vertex) * min(2., 1 + clearance / -depth)
+            offsets = (piece.vertices - initial) + moves + .35 * (edges @ moves) / degree[:, None]
+            norm = np.linalg.norm(offsets, axis=1)
+            piece.vertices = initial + offsets * np.minimum(1., limit / np.maximum(norm, 1e-12))[:, None]
+        current = body_contacts(body, piece)
+        change = np.abs(np.log(np.maximum(piece.edges_unique_length, 1e-12) / np.maximum(baseline_lengths, 1e-12)))
+        strain = float(np.quantile(change, .95))
+        if (strain <= .35 and (not original.is_volume or piece.is_volume)
+                and (current["inside"] + current["contacts"]) < (report["inside"] + report["contacts"])):
+            best, report = piece, current
+            best.metadata["aethryx_component_fit"] = {
+                "uniform_scale": scale, "rotation": rotation.tolist(), "edge_log_change_p95": strain,
+                "closed_volume": bool(piece.is_volume), **current,
+            }
+    return best, report
 
 
 GARMENT_STYLES = {"top": (.53, .735), "falda": (.32, .55), "vestido": (.31, .735)}

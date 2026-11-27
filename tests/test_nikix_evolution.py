@@ -5,7 +5,8 @@ import trimesh
 
 from aethryx_anime import nikix_preset
 from aethryx_materials import unwrap_uv, uv_quality
-from aethryx_modular import BODY, body_contacts, fit_component_to_patch
+from aethryx_modular import BODY, body_contacts, fit_component_to_patch, refine_component_fit
+from aethryx_rig import profile_parts
 
 
 class NikixEvolutionTests(unittest.TestCase):
@@ -46,3 +47,26 @@ class NikixEvolutionTests(unittest.TestCase):
         metrics = uv_quality(packed)
         self.assertEqual(metrics["outside_vertices"], 0)
         self.assertEqual(metrics["overlap_fraction"], 0.)
+
+    def test_refinement_does_not_damage_a_clear_component(self):
+        body = trimesh.creation.icosphere()
+        mesh = trimesh.creation.box(extents=(.4, .6, .25))
+        patch = mesh.copy()
+        patch.apply_translation([3., 2., .5])
+        refined, report = refine_component_fit(body, patch, mesh)
+        self.assertFalse(any(report.values()))
+        np.testing.assert_allclose(refined.bounds, patch.bounds)
+        self.assertTrue(refined.is_volume)
+
+    def test_export_profile_preserves_body_and_independent_attachments(self):
+        studio = nikix_preset(version=4)
+        original_total = sum(len(piece.faces) for piece in studio.values())
+        optimized = profile_parts(studio, "VRChat PC Optimized")
+        mobile = profile_parts(studio, "VRChat Mobile")
+        self.assertLess(sum(len(piece.faces) for piece in mobile.values()),
+                        sum(len(piece.faces) for piece in optimized.values()))
+        self.assertLess(sum(len(piece.faces) for piece in optimized.values()), original_total)
+        self.assertEqual(sum(len(piece.faces) for piece in studio.values()), original_total)
+        for part in (BODY, "ojo-izquierdo", "ojo-derecho", "accesorio-hamsa-izquierdo", "ropa-ribete-emisivo"):
+            self.assertIs(optimized[part], studio[part])
+        self.assertIn("cabello-largo-01", optimized)

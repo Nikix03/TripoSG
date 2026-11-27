@@ -11,6 +11,85 @@ import trimesh
 
 from aethryx_modular import BODY, EYES, ModularAvatar, head_frame
 
+EXPORT_PROFILES = {
+    "Studio Original": (1., False), "VRChat PC Quality": (.8, False),
+    "VRChat PC Optimized": (.55, True), "VRChat Mobile": (.30, True),
+}
+
+
+def profile_parts(parts, profile):
+    ratio, merge = EXPORT_PROFILES[profile]
+    working = dict(parts)
+    if ratio == 1.:
+        return working
+    import pymeshlab
+    from trimesh.visual.texture import TextureVisuals
+
+    bangs = {}
+    for name, mesh in parts.items():
+        if not name.startswith(("cabello-largo-", "cabello-flequillo-")):
+            continue
+        uv = getattr(mesh.visual, "uv", None)
+        material = getattr(mesh.visual, "material", None)
+        if uv is None or material is None or len(mesh.faces) < 160:
+            continue
+        session = pymeshlab.MeshSet()
+        session.add_mesh(pymeshlab.Mesh(np.asarray(mesh.vertices), np.asarray(mesh.faces, dtype=np.int32),
+                                        w_tex_coords_matrix=uv[mesh.faces].reshape(-1, 2)))
+        face_count = max(120, round(len(mesh.faces) * ratio))
+        try:
+            session.meshing_decimation_quadric_edge_collapse_with_texture(
+                targetfacenum=face_count, preservenormal=True, preserveboundary=True,
+            )
+            simplified = session.current_mesh()
+            vertices, faces = simplified.vertex_matrix(), simplified.face_matrix()
+            wedges = simplified.wedge_tex_coord_matrix()
+        except pymeshlab.PyMeshLabException:
+            picture = getattr(material, "baseColorTexture", None)
+            if picture is None:
+                continue
+            bitmap = np.asarray(picture.convert("RGBA"))
+            if not np.all(bitmap == bitmap[:, :1]):
+                continue
+            session = pymeshlab.MeshSet()
+            session.add_mesh(pymeshlab.Mesh(np.asarray(mesh.vertices), np.asarray(mesh.faces, dtype=np.int32)))
+            session.meshing_decimation_quadric_edge_collapse(
+                targetfacenum=face_count, preservenormal=True, preservetopology=True,
+            )
+            simplified = session.current_mesh()
+            vertices, faces = simplified.vertex_matrix(), simplified.face_matrix()
+            distances, nearest = cKDTree(mesh.vertices).query(vertices, k=3)
+            weights = 1 / np.maximum(distances, 1e-10)**2
+            longitudinal = np.sum(uv[nearest, 1] * weights, axis=1) / np.sum(weights, axis=1)
+            wedges = np.column_stack((np.zeros(faces.size), longitudinal[faces.ravel()]))
+        if not len(faces) or len(faces) >= len(mesh.faces):
+            continue
+        shape = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+        deviation = cKDTree(vertices).query(mesh.vertices)[0]
+        if (mesh.is_volume and not shape.is_volume) or np.quantile(deviation, .95) > .07 * mesh.scale:
+            continue
+        indexed = np.column_stack((faces.ravel(), np.round(wedges, 8)))
+        _, first, new_faces = np.unique(indexed, axis=0, return_index=True, return_inverse=True)
+        source = faces.ravel()[first]
+        component = trimesh.Trimesh(vertices=vertices[source], faces=new_faces.reshape(-1, 3), process=False,
+                                    vertex_normals=shape.vertex_normals[source],
+                                    visual=TextureVisuals(uv=wedges[first], material=material.copy()))
+        working[name] = component
+        if merge and name.startswith("cabello-flequillo-"):
+            bangs.setdefault(hash(material), []).append(name)
+    for candidates in bangs.values():
+        if len(candidates) < 2:
+            continue
+        meshes = [working.pop(name) for name in candidates]
+        # Identical materials use the same UV space, so merging does not resample textures.
+        geometry = trimesh.util.concatenate([
+            trimesh.Trimesh(vertices=m.vertices, faces=m.faces, process=False) for m in meshes
+        ])
+        geometry.visual = TextureVisuals(uv=np.vstack([m.visual.uv for m in meshes]),
+                                         material=meshes[0].visual.material.copy())
+        working[candidates[0]] = geometry
+    return working
+
 
 def humanoid_skeleton(body, eyes=None, offsets=None):
     lower, upper = body.bounds
@@ -273,11 +352,13 @@ class _GlbBuffers:
                 + struct.pack("<I4s", len(self.binary), b"BIN\0") + self.binary)
 
 
-def export_rigged_avatar(scene, path, influences=4):
+def export_rigged_avatar(scene, path, influences=4, *, profile="Studio Original"):
     avatar = ModularAvatar(scene)
     if BODY not in avatar.nodes:
         raise ValueError("La escena necesita un nodo cuerpo-base creado por Genesis.")
-    parts = {node: avatar.get(node, world=True) for node in avatar.nodes}
+    if profile not in EXPORT_PROFILES:
+        raise ValueError("Perfil de exportación desconocido.")
+    parts = profile_parts({node: avatar.get(node, world=True) for node in avatar.nodes}, profile)
     body = parts[BODY]
     if not body.is_volume:
         raise ValueError("La exportación articulada requiere un cuerpo cerrado y orientado.")

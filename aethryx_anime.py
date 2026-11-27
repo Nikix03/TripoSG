@@ -1,6 +1,7 @@
 """Procedural anime head topology and fitted cosmetic pieces."""
 
 import numpy as np
+from PIL import Image
 from scipy.spatial import cKDTree
 import trimesh
 
@@ -273,9 +274,9 @@ def _nikix_jewelry(body):
 
 
 def nikix_preset(*, version=3):
-    if version not in (3, 4):
-        raise ValueError("Elige el preset Nikix 3 o 4.")
-    v4 = version == 4
+    if version not in (3, 4, 5):
+        raise ValueError("Elige el preset Nikix 3, 4 o 5.")
+    v4 = version >= 4
     body = sculpted_body("Anime femenino", refined=True)
     dress, _ = fit_garment_with_clearance(body, .016, .006, "vestido")
     dress = apply_material(dress, "#52318a" if v4 else "#655a9d", roughness=.8)
@@ -298,7 +299,40 @@ def nikix_preset(*, version=3):
         trim.visual.material.emissiveFactor = [.17, .026, .09]
         trim.metadata["aethryx_garment"] = dress.metadata["aethryx_garment"].copy()
         pieces["ropa-ribete-emisivo"] = trim
+    if version == 5:
+        _detail_nikix_materials(pieces)
     return pieces
+
+
+def _detail_nikix_materials(pieces):
+    body = pieces[BODY]
+    _, _, front, h = body.metadata["aethryx_eye_guide"]
+    u, v = np.meshgrid(np.linspace(0, 1, 1024), np.linspace(1, 0, 1024))
+    mouth = (body.metadata["aethryx_face_levels"]["mouth"] - body.bounds[0, 1]) / body.extents[1]
+    eye = (body.metadata["aethryx_face_levels"]["eye"] - body.bounds[0, 1]) / body.extents[1]
+    depth = max(front - body.bounds.mean(axis=0)[2], .025 * h)
+    offset = np.arctan2(.037 * h, depth) / (2 * np.pi)
+    cheeks = sum(np.exp(-((u - center) / .035)**2 - ((v - (mouth + eye) * .5) / .014)**2)
+                 for center in (.5 - offset, .5 + offset))
+    lips = np.exp(-((u - .5) / .031)**4 - ((v - mouth) / .0045)**2)
+    warmth = cheeks[..., None] * [-5, -26, -13] + lips[..., None] * [-7, -30, -15]
+    skin = Image.fromarray(np.uint8(np.clip(np.array([239, 189, 171]) + warmth, 0, 255)))
+    pieces[BODY] = apply_material(body, "#ffffff", image=skin, roughness=.62)
+    cap = pieces["cabello-fondo"]
+    # Uneven, narrow striations follow the cylindrical coordinates around the cap.
+    x = u + .028 * np.sin(2 * np.pi * v)
+    glints = (np.cos(2 * np.pi * 43 * x) + .45 * np.cos(2 * np.pi * 19 * x)) / 1.45
+    blond = np.array([233, 178, 78]) + glints[..., None] * [20, 23, 19]
+    pieces["cabello-fondo"] = apply_material(
+        cap, "#ffffff", image=Image.fromarray(np.uint8(np.clip(blond, 0, 255))), roughness=.65,
+    )
+    dress = pieces["ropa-vestido"]
+    warp = np.cos(2 * np.pi * 80 * u) * np.cos(2 * np.pi * 94 * v)
+    thread = np.exp(-((v - .90) / .012)**2) + .65 * np.exp(-((v - .095) / .012)**2)
+    fabric = np.array([82, 49, 138]) + warp[..., None] * 4 + thread[..., None] * [59, 32, 34]
+    pieces["ropa-vestido"] = apply_material(
+        dress, "#ffffff", image=Image.fromarray(np.uint8(np.clip(fabric, 0, 255))), roughness=.8,
+    )
 
 
 def hair_locks(body, length=.45, root="#291d40", tip="#a45483"):

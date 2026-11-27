@@ -1426,6 +1426,19 @@ class AethryxStudio(tk.Tk):
                 plotter = pv.Plotter(title="AETHRYX PyVista/VTK")
                 try:
                     self._populate_pyvista(plotter, pv, scene, hidden)
+                    actors = {actor.GetAddressAsString(""): name for name, actor in plotter.renderer.actors.items()
+                              if name in scene.graph.nodes_geometry}
+
+                    def pick(actor):
+                        node = actors.get(actor.GetAddressAsString("")) if actor is not None else None
+                        if node is not None:
+                            self.after(0, lambda: self._select_viewer_component(scene, node))
+
+                    plotter.enable_mesh_picking(callback=pick, use_actor=True, left_clicking=True,
+                                                color="#24cee8", show_message=False)
+                    for key, direction in (("1", (0, 0, 1)), ("2", (1, 0, 0)), ("3", (0, 0, -1))):
+                        plotter.add_key_event(key, lambda vector=direction: plotter.view_vector(
+                            vector, viewup=(0, 1, 0)))
                     plotter.show(auto_close=False)
                 finally:
                     plotter.close()
@@ -1436,6 +1449,17 @@ class AethryxStudio(tk.Tk):
                 ))
 
         threading.Thread(target=open_viewer, daemon=True).start()
+
+    def _select_viewer_component(self, scene, node):
+        if self.loaded_scene is not scene:
+            return
+        for index, part in enumerate(self.model_parts):
+            if part["node"] == node:
+                item = self.part_to_tree[index]
+                self.scene_tree.selection_set(item)
+                self.scene_tree.see(item)
+                self.status.set(f"Componente seleccionado en 3D · {node}")
+                break
 
     @staticmethod
     def _populate_pyvista(plotter, pv, scene, hidden):

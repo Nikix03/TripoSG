@@ -21,10 +21,11 @@ from aethryx_engines import suggest_anatomical_points
 from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
 from aethryx_reference import (
     AnimeSilhouette, SEE_THROUGH_COLORS, SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, profile_opposite,
-    reference_silhouette, segment_anime_reference,
+    reference_silhouette, refine_visible_mask, segment_anime_reference,
     segment_see_through_v2, semantic_reference_regions, silhouette_calibration,
 )
 from proportion_dialog import ProportionDialog
+from mask_dialog import MaskDialog
 
 
 VIEW_LABELS = dict(zip(VIEWS, ("Frontal", "Lateral", "Posterior")))
@@ -335,6 +336,29 @@ class AnatomyDialog(tk.Toplevel):
             photo = ImageTk.PhotoImage(scaled)
             label = ttk.Label(preview, image=photo)
             label.pack(padx=8, pady=8)
+            def reopen(new_mask):
+                preview.destroy()
+                self.after_idle(lambda: accept(new_mask))
+
+            def edit_mask():
+                editor = MaskDialog(preview, image, mask, colors)
+                preview.wait_window(editor)
+                if editor.result is not None:
+                    reopen(editor.result)
+                else:
+                    preview.grab_set()
+
+            def refine_mask():
+                preview.destroy()
+                self._work("Combinando See-through e ISNet…",
+                           lambda: refine_visible_mask(image, mask, AnimeSilhouette().predict(image)),
+                           accept)
+
+            edit_actions = ttk.Frame(preview)
+            edit_actions.pack()
+            ttk.Button(edit_actions, text="Editar máscara…", command=edit_mask).pack(side="left")
+            if colors is SEE_THROUGH_COLORS:
+                ttk.Button(edit_actions, text="Refinar piel visible con ISNet", command=refine_mask).pack(side="left")
             regions = semantic_reference_regions(image, mask, colors)
             legend = ttk.Frame(preview)
             legend.pack()
@@ -343,6 +367,8 @@ class AnatomyDialog(tk.Toplevel):
                     color = "#%02x%02x%02x" % colors[key]
                     if key == "body" and colors is SEMANTIC_COLORS:
                         caption = "Cuerpo"
+                    elif key == "body":
+                        caption = "Piel visible"
                     if key in regions:
                         caption += f" {regions[key]['color']}"
                     tk.Label(legend, text=caption, bg=color, fg="#11141b", padx=6).pack(side="left")

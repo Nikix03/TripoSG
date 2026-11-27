@@ -112,6 +112,34 @@ public static class AethryxBridgeSmoke {
         }
     }
 
+    public static void TestProfiles()
+    {
+        try
+        {
+            var folder = Environment.GetEnvironmentVariable("AETHRYX_UNITY_PROFILES");
+            var files = System.IO.Directory.GetFiles(folder, "ascension-profile-*.glb");
+            if (files.Length != 4) throw new InvalidOperationException("Expected four profile fixtures.");
+            foreach (var path in files.OrderBy(file => file))
+            {
+                var root = AethryxImporter.Import(path);
+                var body = root.GetComponentsInChildren<SkinnedMeshRenderer>().First(r => r.name == "cuerpo-base");
+                var animator = root.GetComponent<Animator>();
+                if (body.sharedMesh.blendShapeCount != 23 || body.bones.Length != 53 ||
+                    animator == null || !animator.avatar.isValid || !animator.avatar.isHuman)
+                    throw new InvalidOperationException("The profile lost the rig or facial expressions.");
+                AethryxVrchat.Configure(root);
+                Debug.Log("AETHRYX_PROFILE " + System.IO.Path.GetFileName(path) + " " +
+                          AethryxVrchat.ReportPerformance(root));
+            }
+            EditorApplication.Exit(0);
+        }
+        catch (Exception exc)
+        {
+            Debug.LogException(exc);
+            EditorApplication.Exit(1);
+        }
+    }
+
     static void TestFbx(GameObject root)
     {
         var path = AssetDatabase.GenerateUniqueAssetPath("Assets/AETHRYX/nikix-roundtrip.fbx");
