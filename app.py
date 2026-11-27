@@ -1407,29 +1407,48 @@ class AethryxStudio(tk.Tk):
         )
 
     def open_pyvista_viewer(self):
-        path = self.current_model_path
-        if not path or not os.path.isfile(path):
+        scene = self.loaded_scene
+        if scene is None or not scene.graph.nodes_geometry:
             messagebox.showinfo("Visor PyVista/VTK", "Importa o genera una malla primero.")
+            return
+        hidden = set(self._hidden_component_nodes())
+        if hidden.issuperset(scene.graph.nodes_geometry):
+            messagebox.showinfo("Visor PyVista/VTK", "Muestra al menos un componente en la escena.")
             return
 
         def open_viewer():
             try:
                 import pyvista as pv
-                import trimesh
-                scene = trimesh.load(path, force="scene", process=False)
                 plotter = pv.Plotter(title="AETHRYX PyVista/VTK")
-                plotter.set_background("#11141b")
-                for geometry in scene.geometry.values():
-                    plotter.add_mesh(pv.wrap(geometry), smooth_shading=True)
-                plotter.add_axes()
-                plotter.show(auto_close=False)
+                try:
+                    self._populate_pyvista(plotter, pv, scene, hidden)
+                    plotter.show(auto_close=False)
+                finally:
+                    plotter.close()
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror(
+                self.after(0, lambda detail=str(exc): messagebox.showerror(
                     "Visor PyVista/VTK",
-                    str(exc),
+                    detail,
                 ))
 
         threading.Thread(target=open_viewer, daemon=True).start()
+
+    @staticmethod
+    def _populate_pyvista(plotter, pv, scene, hidden):
+        plotter.set_background("#11141b")
+        surfaces = {}
+        for index, node in enumerate(sorted(scene.graph.nodes_geometry)):
+            if node in hidden:
+                continue
+            transform, name = scene.graph[node]
+            geometry = scene.geometry[name]
+            if name not in surfaces:
+                surfaces[name] = pv.wrap(geometry)
+            plotter.add_mesh(surfaces[name], name=node, user_matrix=transform,
+                             color=AethryxStudio._preview_color(geometry, index), smooth_shading=True)
+        plotter.add_axes()
+        # Studio meshes are Y-up. Look from +Z with +Y at the top.
+        plotter.view_vector((0, 0, 1), viewup=(0, 1, 0))
 
     def open_output_folder(self):
         path = os.path.dirname(os.path.abspath(self.output_path.get()))

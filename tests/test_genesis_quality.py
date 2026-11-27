@@ -21,6 +21,27 @@ class GenesisQualityTests(unittest.TestCase):
     def setUpClass(cls):
         cls.body = sculpted_body("Anime femenino")
 
+    def test_vtk_viewer_preserves_visible_mesh_instances(self):
+        try:
+            import pyvista as pv
+        except ImportError as exc:
+            self.skipTest(str(exc))
+        from app import AethryxStudio
+
+        scene = trimesh.Scene()
+        scene.add_geometry(trimesh.creation.box(), geom_name="shared", node_name="base")
+        for name, offset in (("moved", 3), ("hidden", -5)):
+            scene.graph.update(frame_to=name, frame_from=scene.graph.base_frame, geometry="shared",
+                               matrix=trimesh.transformations.translation_matrix([offset, 0, 0]))
+        plotter = pv.Plotter(off_screen=True, window_size=(300, 260))
+        try:
+            AethryxStudio._populate_pyvista(plotter, pv, scene, {"hidden"})
+            self.assertNotIn("hidden", plotter.renderer.actors)
+            np.testing.assert_allclose(plotter.renderer.actors["base"].bounds[:2], [-.5, .5])
+            np.testing.assert_allclose(plotter.renderer.actors["moved"].bounds[:2], [2.5, 3.5])
+        finally:
+            plotter.close()
+
     def test_new_head_is_welded_and_face_geometry_is_modular(self):
         body = self.body
         legacy = anime_body("Anime femenino")
