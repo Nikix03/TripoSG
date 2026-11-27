@@ -374,8 +374,11 @@ def fit_component_to_patch(body, patch, generated):
     result.apply_translation(-source.mean(axis=0))
     result.apply_scale(scale)
     result.apply_translation(target.mean(axis=0))
-    result.metadata["aethryx_component_fit"] = {"uniform_scale": scale, "axes": axes.tolist()}
-    return result, body_contacts(body, result)
+    report = body_contacts(body, result)
+    result.metadata["aethryx_component_fit"] = {
+        "uniform_scale": scale, "axes": axes.tolist(), "closed_volume": bool(result.is_volume), **report,
+    }
+    return result, report
 
 
 GARMENT_STYLES = {"top": (.53, .735), "falda": (.32, .55), "vestido": (.31, .735)}

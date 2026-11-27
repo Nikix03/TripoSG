@@ -73,6 +73,35 @@ public static class AethryxBridgeSmoke {
                 throw new InvalidOperationException("Missing toon emission.");
             if (Environment.GetEnvironmentVariable("AETHRYX_UNITY_FBX") == "1")
                 TestFbx(root);
+            if (Environment.GetEnvironmentVariable("AETHRYX_UNITY_VRCHAT") == "1")
+            {
+                var descriptor = AethryxVrchat.Configure(root);
+                using (var data = new SerializedObject(descriptor))
+                {
+                    var lips = data.FindProperty("VisemeBlendShapes");
+                    if (lips.arraySize != 15 || lips.GetArrayElementAtIndex(11).stringValue != "vrc.v_e" ||
+                        data.FindProperty("VisemeSkinnedMesh").objectReferenceValue != body ||
+                        !data.FindProperty("enableEyeLook").boolValue ||
+                        data.FindProperty("customEyeLookSettings.leftEye").objectReferenceValue == null ||
+                        data.FindProperty("customEyeLookSettings.rightEye").objectReferenceValue == null)
+                        throw new InvalidOperationException("Avatar Descriptor mapping incomplete.");
+                }
+                Debug.Log("AETHRYX_VRCHAT descriptor=" + descriptor.GetType().FullName + " visemes=15 eyes=2");
+                AethryxImporter.DiagnoseSelection();
+                AethryxVrchat.ReportPerformance(root);
+                var earring = renderers.Single(renderer => renderer.name == "accesorio-hamsa-izquierdo");
+                earring.BakeMesh(before);
+                var rest = before.vertices;
+                var phys = AethryxVrchat.PreparePhysBone(earring);
+                earring.BakeMesh(after);
+                if (Enumerable.Range(0, rest.Length).Max(i => Vector3.Distance(rest[i], after.vertices[i])) > .0001f)
+                    throw new InvalidOperationException("PhysBone shifted the bind pose.");
+                phys.transform.localRotation = Quaternion.Euler(0, 0, 20);
+                earring.BakeMesh(after);
+                if (Enumerable.Range(0, rest.Length).Max(i => Vector3.Distance(rest[i], after.vertices[i])) < .002f)
+                    throw new InvalidOperationException("The accessory did not follow the PhysBone pivot.");
+                Debug.Log("AETHRYX_VRCHAT_PHYSBONE " + phys.GetType().FullName + " bind and deformation passed");
+            }
             Debug.Log("AETHRYX_SMOKE renderer=" + renderers.Length + " bones=" + body.bones.Length +
                 " morphs=" + body.sharedMesh.blendShapeCount + " delta=" + displacement +
                 " human=" + (animator != null && animator.avatar.isHuman) + " clips=" + clips + " toon=True");

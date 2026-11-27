@@ -176,7 +176,12 @@ class ComponentDialog(tk.Toplevel):
             candidate, report = fit_component_to_patch(self._body(), self.avatar.get(target, world=True),
                                                        load_body_template(Path(path)))
             self.avatar.add(node, candidate)
-            return f"Ajuste preliminar. Contactos {report['contacts']}, vértices dentro {report['inside']}."
+            if any(report.values()) or not candidate.is_volume:
+                self.avatar.hidden.add(node)
+                status = "Borrador oculto para revisión."
+            else:
+                status = "Ajuste preliminar sin contactos detectados."
+            return f"{status} Contactos {report['contacts']}, vértices dentro {report['inside']}."
 
         self._edit_background(align, node)
 

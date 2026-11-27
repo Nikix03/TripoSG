@@ -51,6 +51,7 @@ class AnatomyDialog(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.result = None
         self.draft = None
+        self.triposg_crop = None
         self.profile = tk.StringVar(value="Anime neutro")
         self.template_path = None
         self.template = None
@@ -363,6 +364,32 @@ class AnatomyDialog(tk.Toplevel):
                     self._error(exc)
             ttk.Button(preview, text="Exportar recortes transparentes…", command=export_crops,
                        state="normal" if regions else "disabled").pack(pady=4)
+            if regions:
+                row = ttk.Frame(preview)
+                row.pack(pady=4)
+                chosen = tk.StringVar(master=preview, value=next(iter(regions)))
+                ttk.Combobox(row, textvariable=chosen, values=list(regions), width=15,
+                             state="readonly").pack(side="left")
+
+                def send_crop():
+                    name = chosen.get()
+                    path = filedialog.asksaveasfilename(parent=preview, defaultextension=".png",
+                                                        initialfile=f"recorte-{name}.png",
+                                                        filetypes=[("PNG con transparencia", "*.png")])
+                    if not path:
+                        return
+                    try:
+                        with Path(path).open("xb") as file:
+                            regions[name]["crop"].save(file, format="PNG")
+                        self.draft = self._build_manifest(False)
+                    except (OSError, ValueError) as exc:
+                        self._error(exc)
+                        return
+                    self.triposg_crop = path
+                    preview.destroy()
+                    self.destroy()
+
+                ttk.Button(row, text="Continuar en TripoSG…", command=send_crop).pack(side="left", padx=4)
             def save():
                 palette = {name: list(color) for name, color in colors.items() if name != "background"}
                 used = {tuple(color): name for name, color in palette.items()}
@@ -390,7 +417,8 @@ class AnatomyDialog(tk.Toplevel):
                     preview.destroy()
             ttk.Button(preview, text="Guardar y usar máscara", command=save).pack(pady=(0, 8))
             self.wait_window(preview)
-            self.grab_set()
+            if self.winfo_exists():
+                self.grab_set()
         if external is not None:
             self._work("Leyendo las máscaras externas de See-through V2…",
                        lambda: import_see_through_v2(external, image.size, include_eyes=True), accept)

@@ -708,6 +708,10 @@ class AethryxStudio(tk.Tk):
         if dialog.result is None:
             if dialog.draft is not None:
                 self.anatomy_setup = dialog.draft
+            if dialog.triposg_crop:
+                self.image_path.set(dialog.triposg_crop)
+                self._load_reference_preview()
+                self.status.set("Recorte semántico cargado para la próxima generación TripoSG.")
             return
         body, patches = dialog.result
         setup = Path(body).parent / "referencias.json"
