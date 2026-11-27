@@ -1,5 +1,11 @@
 # Estado de AETHRYX Studio
 
+## Genesis Evolution · Visor acelerado con materiales
+
+- PyVista reutiliza la malla y la textura de geometrías instanciadas y mantiene sus transformaciones y visibilidad. Renderiza color base, UV, tinte y alfa del material. La comprobación V4 muestra 22 actores texturizados en OpenGL 4.5 sobre la RTX 5070. La evidencia es un render del visor fuera de pantalla. [Vista de texturas](test_assets/anime/project-nikix/visor-texturas-v4.png)
+- Pasaron las 81 pruebas, incluida la regresión del visor con dos instancias texturizadas y una oculta.
+
+
 ## Genesis Evolution · Ensayo híbrido y VRChat local
 
 - En la revisión semántica, **Continuar en TripoSG** guarda un recorte transparente en un PNG nuevo, conserva el borrador multivista y carga el recorte como siguiente entrada de Studio. La prueba con Tk y la máscara real verificó la entrega del PNG y la conservación de la referencia original. El usuario inicia la generación desde Studio.

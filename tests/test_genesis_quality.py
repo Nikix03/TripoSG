@@ -9,7 +9,7 @@ import trimesh
 from aethryx_anatomy import blocking_geometry_issues, validate_deformation
 from aethryx_anime import hair_locks, nikix_preset, sculpted_body, sculpted_face_parts
 from aethryx_bridge import inspect_avatar_glb
-from aethryx_modular import BODY, EYES, anime_body, avatar_eye, body_contacts
+from aethryx_modular import BODY, EYES, anime_body, apply_material, avatar_eye, body_contacts
 from aethryx_rig import PosePreview, export_rigged_avatar
 from aethryx_reference import (AnimeSilhouette, SEE_THROUGH_COLORS, import_see_through_v2,
                                profile_opposite, semantic_reference_regions)
@@ -28,9 +28,12 @@ class GenesisQualityTests(unittest.TestCase):
         except ImportError as exc:
             self.skipTest(str(exc))
         from app import AethryxStudio
+        from PIL import Image
 
         scene = trimesh.Scene()
-        scene.add_geometry(trimesh.creation.box(), geom_name="shared", node_name="base")
+        textured = apply_material(trimesh.creation.box(), "#ffccaa", projection="cylindrical",
+                                  image=Image.new("RGB", (8, 8), "#44aa55"))
+        scene.add_geometry(textured, geom_name="shared", node_name="base")
         for name, offset in (("moved", 3), ("hidden", -5)):
             scene.graph.update(frame_to=name, frame_from=scene.graph.base_frame, geometry="shared",
                                matrix=trimesh.transformations.translation_matrix([offset, 0, 0]))
@@ -38,6 +41,7 @@ class GenesisQualityTests(unittest.TestCase):
         try:
             AethryxStudio._populate_pyvista(plotter, pv, scene, {"hidden"})
             self.assertNotIn("hidden", plotter.renderer.actors)
+            self.assertIsNotNone(plotter.renderer.actors["base"].GetTexture())
             np.testing.assert_allclose(plotter.renderer.actors["base"].bounds[:2], [-.5, .5])
             np.testing.assert_allclose(plotter.renderer.actors["moved"].bounds[:2], [2.5, 3.5])
         finally:

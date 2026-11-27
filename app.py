@@ -1447,9 +1447,36 @@ class AethryxStudio(tk.Tk):
             transform, name = scene.graph[node]
             geometry = scene.geometry[name]
             if name not in surfaces:
-                surfaces[name] = pv.wrap(geometry)
-            plotter.add_mesh(surfaces[name], name=node, user_matrix=transform,
-                             color=AethryxStudio._preview_color(geometry, index), smooth_shading=True)
+                surface = pv.wrap(geometry)
+                visual = getattr(geometry, "visual", None)
+                material = getattr(visual, "material", None)
+                image = getattr(material, "baseColorTexture", None)
+                if image is None:
+                    image = getattr(material, "image", None)
+                uv = getattr(visual, "uv", None)
+                texture = None
+                if image is not None and uv is not None and np.isfinite(uv).all():
+                    surface.active_texture_coordinates = np.asarray(uv)
+                    bitmap = np.asarray(image.convert("RGBA")).copy()
+                    tint = getattr(material, "baseColorFactor", None)
+                    if tint is not None:
+                        factors = np.asarray(tint, dtype=float)
+                        if factors.max() > 1:
+                            factors /= 255.
+                        bitmap = np.rint(np.clip(bitmap * factors, 0, 255)).astype(np.uint8)
+                    if getattr(material, "alphaMode", None) == "MASK":
+                        cutoff = getattr(material, "alphaCutoff", None)
+                        bitmap[:, :, 3] = np.uint8(bitmap[:, :, 3] >= 255 * (.5 if cutoff is None else cutoff)) * 255
+                    elif getattr(material, "alphaMode", "OPAQUE") != "BLEND":
+                        bitmap[:, :, 3] = 255
+                    texture = pv.numpy_to_texture(bitmap)
+                    texture.interpolate = True
+                surfaces[name] = surface, texture
+            surface, texture = surfaces[name]
+            appearance = {"texture": texture} if texture is not None else {
+                "color": AethryxStudio._preview_color(geometry, index),
+            }
+            plotter.add_mesh(surface, name=node, user_matrix=transform, smooth_shading=True, **appearance)
         plotter.add_axes()
         # Studio meshes are Y-up. Look from +Z with +Y at the top.
         plotter.view_vector((0, 0, 1), viewup=(0, 1, 0))

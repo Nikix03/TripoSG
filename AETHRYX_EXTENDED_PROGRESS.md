@@ -102,3 +102,8 @@
 - Unity 2022.3.22f1 y el SDK oficial de VRChat 3.10.6 validaron el Avatar Descriptor, el mapa de los 15 visemas y dos huesos de mirada. El informe del SDK calificó V4 como `VeryPoor` tanto en PC como en móvil. La escena tiene 42 renderers, 38.903 vértices, 77.634 triángulos y 13 materiales. Unity Test Framework 1.1.33 resolvió la falta de NUnit que bloqueó el primer arranque en batch. [SDK oficial](https://vrchat.github.io/packages/)
 - El menú PhysBone permite preparar un aro o mechón largo ligado rígidamente a la cabeza. Crea un pivote por pieza y clona la malla antes de ajustar la matriz de reposo. El aro izquierdo conservó la pose de reposo y se deformó al rotar el pivote en la prueba. Falta verificar el comportamiento dinámico en juego. La comprobación final del proyecto temporal también repitió FBX con éxito. No se usó ningún proyecto personal ni se publicó un avatar. [PhysBones](https://creators.vrchat.com/common-components/physbones/)
 - Pasaron 81 pruebas. Quedan pendientes la reconstrucción multivista con los originales de Nikix, un ajuste capilar sin penetraciones, refinamiento de rostro y extremidades, Poiyomi, optimización del rendimiento y recuperación de trabajos de inferencia interrumpidos.
+
+## Genesis Evolution · Visor acelerado con materiales
+
+- PyVista reutiliza la malla y la textura de geometrías instanciadas y mantiene sus transformaciones y visibilidad. Renderiza color base, UV, tinte y alfa del material. La comprobación V4 muestra 22 actores texturizados en OpenGL 4.5 sobre la RTX 5070. La evidencia es un render del visor fuera de pantalla. [Vista de texturas](test_assets/anime/project-nikix/visor-texturas-v4.png)
+- Pasaron las 81 pruebas, incluida la regresión del visor con dos instancias texturizadas y una oculta.
