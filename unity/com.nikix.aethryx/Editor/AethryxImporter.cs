@@ -188,30 +188,22 @@ namespace Nikix.Aethryx
                     var node = doc.nodes[i];
                     if (node.mesh < 0 || node.skin != 0) continue;
                     var definition = doc.meshes[node.mesh];
-                    for (int j = 0; j < definition.primitives.Length; j++)
+                    var mesh = definition.primitives.Length == 1
+                        ? BuildMesh(file, definition.primitives[0], definition.extras, bind)
+                        : BuildBatchedMesh(file, definition, bind);
+                    AssetDatabase.CreateAsset(mesh, folder + "/mesh-" + i + "-0.asset");
+                    var renderer = transforms[i].gameObject.AddComponent<SkinnedMeshRenderer>();
+                    renderer.sharedMesh = mesh;
+                    renderer.bones = skin.joints.Select(joint => transforms[joint]).ToArray();
+                    renderer.rootBone = transforms[skin.skeleton];
+                    renderer.sharedMaterials = definition.primitives.Select(primitive =>
                     {
-                        var primitive = definition.primitives[j];
-                        var owner = transforms[i].gameObject;
-                        if (j > 0)
-                        {
-                            owner = new GameObject("Primitive_" + j);
-                            owner.transform.SetParent(transforms[i], false);
-                        }
-                        var mesh = BuildMesh(file, primitive, definition.extras, bind);
-                        AssetDatabase.CreateAsset(mesh, folder + "/mesh-" + i + "-" + j + ".asset");
-                        var renderer = owner.AddComponent<SkinnedMeshRenderer>();
-                        renderer.sharedMesh = mesh;
-                        renderer.bones = skin.joints.Select(joint => transforms[joint]).ToArray();
-                        renderer.rootBone = transforms[skin.skeleton];
                         if (primitive.material >= 0)
-                            renderer.sharedMaterial = materials[primitive.material];
-                        else
-                        {
-                            if (fallbackMaterial == null)
-                                fallbackMaterial = BuildMaterial(file, new MaterialDef(), folder, materials.Length);
-                            renderer.sharedMaterial = fallbackMaterial;
-                        }
-                    }
+                            return materials[primitive.material];
+                        if (fallbackMaterial == null)
+                            fallbackMaterial = BuildMaterial(file, new MaterialDef(), folder, materials.Length);
+                        return fallbackMaterial;
+                    }).ToArray();
                 }
                 var human = BuildHumanoid(root, transforms, skin);
                 if (human.isValid && human.isHuman)
@@ -238,6 +230,60 @@ namespace Nikix.Aethryx
                 UnityEngine.Object.DestroyImmediate(root);
                 AssetDatabase.DeleteAsset(folder);
                 throw;
+            }
+        }
+
+        static Mesh BuildBatchedMesh(Binary file, MeshDef definition, Matrix4x4[] bind)
+        {
+            var parts = new List<Mesh>();
+            Mesh combined = null;
+            try
+            {
+                foreach (var primitive in definition.primitives)
+                    parts.Add(BuildMesh(file, primitive, definition.extras, bind));
+                int count = parts.Sum(mesh => mesh.vertexCount);
+                combined = new Mesh { indexFormat = count > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16 };
+                combined.vertices = parts.SelectMany(mesh => mesh.vertices).ToArray();
+                combined.normals = parts.SelectMany(mesh => mesh.normals).ToArray();
+                combined.uv = parts.SelectMany(mesh => mesh.uv.Length == mesh.vertexCount
+                    ? mesh.uv : new Vector2[mesh.vertexCount]).ToArray();
+                combined.bindposes = bind;
+                combined.boneWeights = parts.SelectMany(mesh => mesh.boneWeights).ToArray();
+                combined.subMeshCount = parts.Count;
+                int offset = 0;
+                for (int index = 0; index < parts.Count; index++)
+                {
+                    combined.SetTriangles(parts[index].triangles, index, false, offset);
+                    offset += parts[index].vertexCount;
+                }
+                foreach (string name in definition.extras?.targetNames ?? Array.Empty<string>())
+                {
+                    var deltas = new Vector3[count];
+                    offset = 0;
+                    foreach (var mesh in parts)
+                    {
+                        int shape = mesh.GetBlendShapeIndex(name);
+                        if (shape >= 0)
+                        {
+                            var local = new Vector3[mesh.vertexCount];
+                            mesh.GetBlendShapeFrameVertices(shape, 0, local, null, null);
+                            Array.Copy(local, 0, deltas, offset, local.Length);
+                        }
+                        offset += mesh.vertexCount;
+                    }
+                    combined.AddBlendShapeFrame(name, 100, deltas, null, null);
+                }
+                combined.RecalculateBounds();
+                return combined;
+            }
+            catch
+            {
+                if (combined != null) UnityEngine.Object.DestroyImmediate(combined);
+                throw;
+            }
+            finally
+            {
+                foreach (var mesh in parts) UnityEngine.Object.DestroyImmediate(mesh);
             }
         }
 

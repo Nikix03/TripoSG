@@ -1,5 +1,16 @@
 # Estado de AETHRYX Studio
 
+## 28 de noviembre de 2026 · Genesis Ascendant
+
+- Pasaron 118 pruebas con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
+- Studio y KIRIA despejan mechones y cubierta capilar en tres poses. El solver evalúa las superficies en el espacio de reposo de la cabeza, protege las raíces superficiales y limita el movimiento de raíces profundamente penetradas. Conserva UV, cierre y silueta. Para conservar el volumen de la cubierta desplaza juntas las paredes interior y exterior.
+- En el ensayo Perfection → Ascendant, los contactos bajaron de 1.363 a 711 en reposo, de 1.942 a 915 en demostración y de 1.550 a 894 con brazos elevados. Los vértices interiores bajaron de 406 a 329, de 622 a 460 y de 505 a 398. Las piezas con contacto fueron 9, 10 y 9.
+- **VRChat PC Preserve Shape** se verificó localmente en Perfection y Ascendant. La copia final presenta 67.540 triángulos, 8 nodos con skinning, 12 slots y 8 materiales únicos. Conservó 53 articulaciones, 23 morphs corporales y 15 visemas. Se compararon 33.834 vértices de Ascendant, con diferencia cero en posiciones, pesos, matrices de reposo y deformación en el ensayo con parpadeo y visema.
+- El importador Unity conserva las primitivas de un nodo como submallas del mismo renderer y copia sus deltas de blendshape. Compiló contra Unity 2022.3.22f1. La clasificación y la dinámica siguen sin verificar por el bloqueo previo de licencia. Los GLB conservan 13 guías capilares de cuatro puntos en reposo. El rig modular conserva los mechones independientes.
+- Los guantes siguen ocultos como borrador. La flexión según el plano de la palma a 20° registró 400 contactos y 16 vértices interiores por guante. La prueba de estrés alrededor de X conserva 1.254 contactos por guante. El cuerpo flexionado presenta autointersecciones.
+- El candidato existente de TripoSR quedó fuera del avatar. Aprobó cierre y ausencia de contacto, con cobertura de coronilla de 23,75 % y coincidencia frontal con la guía de 1,85 %. Ollama no respondió al consultar el servicio local.
+- El proyecto editable, el GLB articulado, la copia PC y la comparación visual con Perfection permanecen en local. Siguen pendientes la reconciliación esquelética multivista, la remodelación facial y de extremidades y la implementación de cadenas dinámicas.
+
 ## 28 de noviembre de 2026 · Genesis Perfection
 
 - Pasaron 117 pruebas con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.

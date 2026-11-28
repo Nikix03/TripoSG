@@ -1,5 +1,14 @@
 # AETHRYX Studio · Genesis Extended
 
+## Genesis Ascendant · Colisiones en poses y equivalencia de exportación
+
+- El ensayo usó el mismo cuerpo de Perfection, reposo, demostración y brazos elevados. Se aplicó holgura 0,002 de la altura corporal a los mechones y 0,0035 a la cubierta. El solver exige al menos 78 % de retención de silueta por proyección, un volumen entre 85 % y 115 % del original y que el recuento de contactos e interiores no aumente en ninguna pose evaluada. La cubierta conservó 105,69 % de su volumen y bajó de 706 a 54 contactos en reposo, con cero vértices interiores.
+- Se descartó una corrección preliminar que reducía el volumen de la cubierta a cerca del 24 %. La solución final desplaza ambas paredes en pares. Las raíces superficiales permanecen fijas y el movimiento de raíces profundas se limita al 0,5 % de la altura. La medición registra los contactos observados y separa los interiores de raíz. Las uniones artísticas requieren revisión visual.
+- El perfil PC mantiene los triángulos, conserva el atlas capilar y une las primitivas de detalle ocular mediante submallas. Cada lado conserva sus morphs de parpadeo. La comparación leyó los buffers GLB y aplicó pose de demostración, BlinkLeft al 70 % y vrc.v_aa al 50 %. Se compararon índices y pesos de articulaciones y matrices inversas de reposo. El error máximo entre los 33.834 vértices deformados fue cero. El importador se compiló fuera del editor. [Lectura de deltas de morph en Unity](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/Mesh.GetBlendShapeFrameVertices.html)
+- Se conservó una guía de cuatro centros de raíz a punta por mechón largo antes de agrupar el cabello. Los 13 registros son coordenadas de montaje. Los GLB comprobados mantienen 53 huesos y el cabello ligado rígidamente a la cabeza. Queda pendiente convertir las guías en cadenas dinámicas y validar sus pesos en Unity.
+- En el fixture V6, el cuerpo presentó cero autointersecciones en reposo y 39 al flexionar anatómicamente una mano. La nueva prueba usa el plano de la palma y la dirección del dedo. La prueba de estrés anterior permanece disponible. Se mantienen ocultos los guantes y quedan pendientes los pesos y articulaciones.
+- El cuerpo conserva la procedencia de Perfection. El cabello sigue siendo procedural con corrección. La evaluación del candidato generativo reutilizó la malla local de TripoSR sin repetir inferencia.
+
 ## Genesis Perfection · Holgura capilar y avatar de revisión
 
 - El solver evalúa distancia firmada a la superficie corporal, corrige el mechón por vértice y suaviza el desplazamiento entre vecinos. La zona de raíz con UV V ≥ 0,999 permanece fija. La holgura de ensayo fue 0,002 de la altura, con desplazamiento máximo de 0,035. Se exige volumen y al menos 78 % de retención de silueta en cada una de tres proyecciones antes de conservar una corrección. El reporte separa los vértices interiores fijos de los móviles.

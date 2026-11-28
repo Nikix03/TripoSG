@@ -13,9 +13,10 @@ import numpy as np
 
 from aethryx_anatomy import blocking_geometry_issues, validate_deformation
 from aethryx_anime import hair_locks
-from aethryx_modular import (BODY, EYES, ModularAvatar, apply_material, facial_vertices,
+from aethryx_modular import (BODY, EYES, ModularAvatar, apply_material, clear_hair_penetrations, facial_vertices,
                             fit_garment_with_clearance, fit_sleeves, recolor_iris, write_new_glb)
 from aethryx_ollama import LOCAL_ACTIONS, OllamaProvider
+from aethryx_rig import PosePreview, hair_clearance_bodies
 from aethryx_tools import execute_tool, tool_catalog
 
 
@@ -44,7 +45,7 @@ def plan_scene_command(action, selection, nodes, parameter=""):
             raise ValueError("El cambio de iris requiere seleccionar ojos.")
         return ScenePlan(action, selected, parameter)
     ranges = {"altura": (.80, 1.20), "nariz": (.75, 1.25), "longitud_cabello": (0., 1.),
-              "holgura_ropa": (.003, .06)}
+              "holgura_ropa": (.003, .06), "despejar_mechon": (.0001, .01)}
     if action in ranges:
         low, high = ranges[action]
         try:
@@ -53,10 +54,13 @@ def plan_scene_command(action, selection, nodes, parameter=""):
             raise ValueError(f"Introduce un valor numérico entre {low} y {high}.") from None
         if not math.isfinite(value) or not low <= value <= high:
             raise ValueError(f"Introduce un valor entre {low} y {high}.")
-        if action != "holgura_ropa" and selected != (BODY,):
+        if action not in {"holgura_ropa", "despejar_mechon"} and selected != (BODY,):
             raise ValueError("Selecciona el cuerpo base para preparar este cambio.")
         if action == "holgura_ropa" and (len(selected) != 1 or not selected[0].startswith("prenda-") or BODY not in nodes):
             raise ValueError("Selecciona una prenda ajustable en una escena con cuerpo base.")
+        if action == "despejar_mechon" and (len(selected) != 1 or BODY not in nodes or (
+                selected[0] != "cabello-fondo" and not selected[0].startswith(("cabello-largo-", "cabello-flequillo-")))):
+            raise ValueError("Selecciona una cubierta o un mechón de Genesis en una escena con cuerpo base.")
         return ScenePlan(action, selected, value=value)
     if action == "mangas":
         if selected != (BODY,) or parameter:
@@ -109,6 +113,16 @@ def apply_scene_plan(plan, scene, hidden):
         new.visual.material = previous.visual.material.copy()
         new.apply_transform(np.linalg.inv(avatar.scene.graph[node][0]))
         avatar.replace(node, new)
+    elif plan.action == "despejar_mechon":
+        node = plan.nodes[0]
+        preview = PosePreview(avatar.scene)
+        mesh, review = clear_hair_penetrations(preview.parts[BODY], preview.parts[node],
+                                               clearance=plan.value, posed_bodies=hair_clearance_bodies(preview),
+                                               repair_roots=True, paired_shell=node == "cabello-fondo")
+        if review["changed"]:
+            mesh.metadata["aethryx_pose_clearance"] = review
+            mesh.apply_transform(np.linalg.inv(avatar.scene.graph[node][0]))
+            avatar.replace(node, mesh)
     elif plan.action == "mangas":
         for node, sleeve in fit_sleeves(avatar.get(BODY, world=True)).items():
             avatar.add(node, sleeve)

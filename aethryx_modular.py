@@ -364,7 +364,8 @@ def body_contacts(body, component):
     return {"contacts": collision.GetNumberOfContacts(), "inside": inside}
 
 
-def clear_hair_penetrations(body, piece, *, clearance=.002, maximum_shift=.035):
+def clear_hair_penetrations(body, piece, *, clearance=.002, maximum_shift=.035,
+                            posed_bodies=None, repair_roots=False, paired_shell=False):
     """Displace a closed lock locally on a copy while fixing the textured root."""
     from pyvista import PolyData
     from scipy.sparse import coo_matrix
@@ -372,43 +373,79 @@ def clear_hair_penetrations(body, piece, *, clearance=.002, maximum_shift=.035):
 
     if not body.is_volume or not 0 < clearance <= .01 or not clearance < maximum_shift <= .06:
         raise ValueError("Se requiere un cuerpo cerrado y una holgura y desplazamiento válidos.")
-    before = body_contacts(body, piece)
+    bodies = {"reposo": body, **(posed_bodies or {})}
+    before_pose = {name: body_contacts(mesh, piece) for name, mesh in bodies.items()}
+    before = before_pose["reposo"]
     uv = getattr(piece.visual, "uv", None)
-    if not any(before.values()) or uv is None or not piece.is_volume:
-        return piece.copy(), {"before": before, "after": before, "root_contacts": 0, "changed": False}
-    surface = PolyData(body.vertices, np.column_stack((np.full(len(body.faces), 3), body.faces)))
-    locator = vtkImplicitPolyDataDistance()
-    locator.SetInput(surface)
+    if not any(any(check.values()) for check in before_pose.values()) or uv is None or not piece.is_volume:
+        return piece.copy(), {"before": before, "after": before, "root_contacts": 0, "changed": False,
+                              "before_poses": before_pose, "after_poses": before_pose}
+    locators = []
+    for mesh in bodies.values():
+        surface = PolyData(mesh.vertices, np.column_stack((np.full(len(mesh.faces), 3), mesh.faces)))
+        locator = vtkImplicitPolyDataDistance()
+        locator.SetInput(surface)
+        locators.append(locator)
     vertices = np.asarray(piece.vertices).copy()
     height = body.extents[1]
+    half = len(vertices) // 2
+    if paired_shell and (len(vertices) % 2 or not half
+                         or np.max(np.linalg.norm(vertices[:half] - vertices[half:], axis=1)) > .015 * height):
+        raise ValueError("La cubierta capilar necesita conservar los pares de vértices de Genesis.")
     strength = np.clip((.999 - uv[:, 1]) / .10, 0., 1.)
-    root_contacts = sum(locator.EvaluateFunction(point) < 0 for point in vertices[strength == 0])
+    roots = strength == 0
+    root_depth = np.zeros(len(vertices))
+    root_depth[roots] = [max(0., -locators[0].EvaluateFunction(point)) for point in vertices[roots]]
+    root_contacts = np.count_nonzero(root_depth)
+    defective_roots = roots & (root_depth > .001 * height)
+    if repair_roots:
+        strength[defective_roots] = .65
+    ceiling = np.full(len(vertices), maximum_shift * height)
+    ceiling[roots] = .005 * height if repair_roots else 0.
+    if paired_shell:
+        strength[:] = np.tile(np.minimum(strength[:half], strength[half:]), 2)
+        ceiling[:] = np.tile(np.minimum(ceiling[:half], ceiling[half:]), 2)
     edges = piece.edges_unique
     adjacency = coo_matrix((np.ones(len(edges)), edges.T), shape=(len(vertices), len(vertices))).tocsr()
     adjacency = adjacency + adjacency.T
     degree = np.maximum(np.asarray(adjacency.sum(axis=1)), 1)
     candidate = piece.copy()
-    best, after = piece.copy(), before
+    best, after_pose = piece.copy(), before_pose
     for _ in range(6):
         moves = np.zeros_like(vertices)
-        for index, point in enumerate(candidate.vertices):
-            closest = [0., 0., 0.]
-            signed = locator.EvaluateFunctionAndGetClosestPoint(point, closest)
-            target = height * clearance
-            if signed < target and abs(signed) > 1e-9:
-                moves[index] = (point - np.asarray(closest)) * ((target - signed) / signed)
-        offset = (candidate.vertices - vertices) + (moves + .22 * (adjacency @ moves) / degree) * strength[:, None]
+        severity = np.zeros(len(vertices))
+        for locator in locators:
+            for index, point in enumerate(candidate.vertices):
+                if strength[index] == 0:
+                    continue
+                closest = [0., 0., 0.]
+                signed = locator.EvaluateFunctionAndGetClosestPoint(point, closest)
+                # Preserve a larger clearance around the front of the head.
+                face_band = point[1] > body.bounds[1, 1] - .15 * height and point[2] > body.centroid[2]
+                target = height * clearance * (1.35 if face_band and posed_bodies else 1.)
+                if target - signed > severity[index] and abs(signed) > 1e-9:
+                    severity[index] = target - signed
+                    moves[index] = (point - np.asarray(closest)) * ((target - signed) / signed)
+        moves += .22 * (adjacency @ moves) / degree
+        if paired_shell:
+            outer, inner = moves[:half], moves[half:]
+            stronger = np.linalg.norm(outer, axis=1) > np.linalg.norm(inner, axis=1)
+            moves[:] = np.tile(np.where(stronger[:, None], outer, inner), (2, 1))
+        offset = (candidate.vertices - vertices) + moves * strength[:, None]
         length = np.linalg.norm(offset, axis=1)
-        offset *= np.minimum(1, height * maximum_shift / np.maximum(length, 1e-12))[:, None]
+        offset *= np.minimum(1, ceiling / np.maximum(length, 1e-12))[:, None]
         candidate.vertices = vertices + offset
-        current = body_contacts(body, candidate)
-        if (candidate.is_volume and all(current[key] <= after[key] for key in current)
-                and current != after
+        current = {name: body_contacts(mesh, candidate) for name, mesh in bodies.items()}
+        if (candidate.is_volume and .85 <= candidate.volume / piece.volume <= 1.15
+                and all(check[key] <= after_pose[name][key]
+                                       for name, check in current.items() for key in check)
+                and current != after_pose
                 and min(hair_silhouette_overlap(piece, candidate, size=128).values()) >= .78):
-            best, after = candidate.copy(), current
-    residual = sum(locator.EvaluateFunction(point) < 0 for point in best.vertices[strength > 0])
-    return best, {"before": before, "after": after, "root_contacts": int(root_contacts),
-                  "movable_inside": int(residual), "changed": after != before}
+            best, after_pose = candidate.copy(), current
+    residual = sum(locators[0].EvaluateFunction(point) < 0 for point in best.vertices[~roots])
+    return best, {"before": before, "after": after_pose["reposo"], "root_contacts": int(root_contacts),
+                  "defective_root_vertices": int(defective_roots.sum()), "movable_inside": int(residual),
+                  "before_poses": before_pose, "after_poses": after_pose, "changed": after_pose != before_pose}
 
 
 def fit_component_to_patch(body, patch, generated):

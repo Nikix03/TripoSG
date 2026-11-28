@@ -10,7 +10,7 @@ _ROOT = "http://127.0.0.1:11434"
 _MAX_RESPONSE = 1024 * 1024
 LOCAL_ACTIONS = (
     "ocultar", "mostrar", "color_base", "color_iris", "altura", "nariz", "longitud_cabello", "holgura_ropa",
-    "mangas",
+    "mangas", "despejar_mechon",
 )
 
 

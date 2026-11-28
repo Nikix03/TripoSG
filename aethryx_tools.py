@@ -195,6 +195,11 @@ def inspect_component_geometry(path):
 
 
 TOOL_REGISTRY = {
+    "audit_articulated_glb": ToolDefinition(
+        "audit_articulated_glb",
+        "Audita localmente articulaciones, morphs, materiales y mallas de un GLB articulado.",
+        {"model_path": "string"}, ("read",), True,
+    ),
     "get_regional_candidate_review": ToolDefinition(
         "get_regional_candidate_review",
         "Muestra las métricas de la última priorización regional sin abrir ni exponer archivos.",
@@ -335,6 +340,12 @@ def execute_tool(name, inputs, project_context=None, write_allowed=False):
         return get_mesh_statistics(inputs.get("model_path", ""))
     if name == "inspect_component_geometry":
         return inspect_component_geometry(inputs.get("model_path", ""))
+    if name == "audit_articulated_glb":
+        from aethryx_bridge import inspect_avatar_glb
+        try:
+            return {"status": "available", **inspect_avatar_glb(inputs.get("model_path", ""))}
+        except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+            return {"status": "error", "reason": str(exc)}
     if name == "split_disconnected_components":
         return split_disconnected_components(inputs.get("model_path", ""))
     if name == "validate_avatar":

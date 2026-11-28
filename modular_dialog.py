@@ -16,7 +16,8 @@ from aethryx_anime import hair_locks, layered_hair, nikix_preset, sculpted_body,
 from aethryx_bridge import inspect_avatar_glb
 from aethryx_materials import (CHANNELS, RESOLUTIONS, color_gradient, save_pbr_maps, transform_uv,
                               unwrap_uv, update_pbr_maps, uv_quality)
-from aethryx_rig import EXPORT_PROFILES, component_pose_contacts, export_rigged_avatar, preview_expression, preview_pose
+from aethryx_rig import (EXPORT_PROFILES, PosePreview, component_pose_contacts, export_rigged_avatar,
+                         hair_clearance_bodies, preview_expression, preview_pose)
 from pose_dialog import PoseDialog
 from aethryx_modular import (
     BODY, BODY_PREVIEW_BANDS, EYES, FACE_CONTROLS, ModularAvatar, anime_body, apply_material, avatar_eye,
@@ -168,8 +169,8 @@ class ComponentDialog(tk.Toplevel):
 
     def clear_hair_lock(self):
         node = self._selected()
-        if not node or not node.startswith(("cabello-flequillo-", "cabello-largo-")):
-            self.status.set("Selecciona un mechón con UV longitudinales.")
+        if not node or (node != "cabello-fondo" and not node.startswith(("cabello-flequillo-", "cabello-largo-"))):
+            self.status.set("Selecciona un mechón o una cubierta capilar de Genesis.")
             return
         clearance = simpledialog.askfloat("Holgura capilar", "Fracción de la altura corporal.",
                                           initialvalue=.002, minvalue=.0001, maxvalue=.01, parent=self)
@@ -177,13 +178,16 @@ class ComponentDialog(tk.Toplevel):
             return
 
         def adjust():
+            preview = PosePreview(self.avatar.scene)
             piece, review = clear_hair_penetrations(self._body(), self.avatar.get(node, world=True),
-                                                    clearance=clearance)
+                                                    clearance=clearance, posed_bodies=hair_clearance_bodies(preview),
+                                                    repair_roots=True, paired_shell=node == "cabello-fondo")
             if review["changed"]:
                 matrix, _ = self.avatar.scene.graph[node]
                 piece.apply_transform(np.linalg.inv(matrix))
                 self.avatar.replace(node, piece)
-            return f"Mechón · {review['before']['inside']} → {review['after']['inside']} vértices interiores."
+            return " · ".join(f"{pose} {before['inside']} → {review['after_poses'][pose]['inside']} interiores"
+                              for pose, before in review["before_poses"].items())
         self._edit_background(adjust, node)
 
     def fit_generated(self):

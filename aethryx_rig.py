@@ -15,18 +15,20 @@ EXPORT_PROFILES = {
     "Studio Original": (1., False), "VRChat PC Quality": (.8, False),
     "VRChat PC Optimized": (.47, True), "VRChat Mobile": (.30, True),
     "VRChat PC Hair Batch": (.47, True),
+    "VRChat PC Preserve Shape": (1., True),
 }
 
 
 def profile_parts(parts, profile):
     ratio, merge = EXPORT_PROFILES[profile]
     working = dict(parts)
-    if ratio == 1.:
+    if ratio == 1. and not merge:
         return working
-    import pymeshlab
     from trimesh.visual.texture import TextureVisuals
 
-    for name, mesh in parts.items():
+    if ratio < 1.:
+        import pymeshlab
+    for name, mesh in (parts.items() if ratio < 1. else ()):
         if not name.startswith(("cabello-largo-", "cabello-flequillo-")):
             continue
         uv = getattr(mesh.visual, "uv", None)
@@ -80,7 +82,8 @@ def profile_parts(parts, profile):
     bangs = {}
     for name, mesh in working.items():
         material = getattr(mesh.visual, "material", None)
-        prefixes = ("cabello-flequillo-", "cabello-largo-") if profile == "VRChat PC Hair Batch" else ("cabello-flequillo-",)
+        prefixes = (("cabello-flequillo-", "cabello-largo-")
+                    if profile in {"VRChat PC Hair Batch", "VRChat PC Preserve Shape"} else ("cabello-flequillo-",))
         if merge and name.startswith(prefixes) and material is not None:
             bangs.setdefault(hash(material), []).append(name)
     for candidates in bangs.values():
@@ -94,7 +97,7 @@ def profile_parts(parts, profile):
         geometry.visual = TextureVisuals(uv=np.vstack([m.visual.uv for m in meshes]),
                                          material=meshes[0].visual.material.copy())
         working[candidates[0]] = geometry
-    if profile == "VRChat PC Hair Batch":
+    if profile in {"VRChat PC Hair Batch", "VRChat PC Preserve Shape"}:
         for eye in EYES:
             upper_name, lower_name = (f"{eye}-parpado-{suffix}" for suffix in ("superior", "inferior"))
             if upper_name not in working or lower_name not in working:
@@ -470,13 +473,65 @@ class _GlbBuffers:
                 + struct.pack("<I4s", len(self.binary), b"BIN\0") + self.binary)
 
 
+def hair_physics_guides(parts):
+    """Keep per-lock centers in rest space before the export batches the geometry."""
+    guides = []
+    for name, mesh in parts.items():
+        if not name.startswith("cabello-largo-"):
+            continue
+        uv = getattr(mesh.visual, "uv", None)
+        if uv is None or len(uv) != len(mesh.vertices) or np.ptp(uv[:, 1]) < .8:
+            continue
+        longitudinal = uv[:, 1]
+        points = [mesh.vertices[np.abs(longitudinal - level) <= np.min(abs(longitudinal - level)) + .012]
+                  .mean(axis=0).tolist() for level in (1., .7, .35, 0.)]
+        if np.isfinite(points).all() and np.linalg.norm(np.diff(points, axis=0), axis=1).min() > 1e-6:
+            guides.append({"name": name, "attachment": "Head", "points": points})
+    return guides
+
+
+def _batch_eye_details(glb, nodes):
+    """Keep eye detail primitives intact while sharing their head-bound renderer."""
+    meshes = glb.document["meshes"]
+    by_name = {node.get("name"): node for node in nodes if "mesh" in node}
+    for eye in EYES:
+        batch = [by_name[name] for suffix in ("parpado-par", "pestana", "ceja")
+                 if (name := f"{eye}-{suffix}") in by_name]
+        if len(batch) < 2:
+            continue
+        names = list(dict.fromkeys(target for node in batch
+                                  for target in meshes[node["mesh"]].get("extras", {}).get("targetNames", [])))
+        primitives = []
+        for node in batch:
+            mesh = meshes[node.pop("mesh")]
+            node.pop("skin")
+            existing = mesh.get("extras", {}).get("targetNames", [])
+            for source in mesh["primitives"]:
+                primitive = source.copy()
+                targets = dict(zip(existing, source.get("targets", [])))
+                if names and set(names) - set(targets):
+                    size = glb.document["accessors"][source["attributes"]["POSITION"]]["count"]
+                    zero = {"POSITION": glb.accessor(np.zeros((size, 3)), "VEC3", bounds=True)}
+                    primitive["targets"] = [targets.get(name, zero) for name in names]
+                elif names:
+                    primitive["targets"] = [targets[name] for name in names]
+                primitives.append(primitive)
+        batch[0]["mesh"] = len(meshes)
+        batch[0]["skin"] = 0
+        mesh = {"name": batch[0]["name"], "primitives": primitives}
+        if names:
+            mesh.update(weights=[0.] * len(names), extras={"targetNames": names})
+        meshes.append(mesh)
+
+
 def export_rigged_avatar(scene, path, influences=4, *, profile="Studio Original"):
     avatar = ModularAvatar(scene)
     if BODY not in avatar.nodes:
         raise ValueError("La escena necesita un nodo cuerpo-base creado por Genesis.")
     if profile not in EXPORT_PROFILES:
         raise ValueError("Perfil de exportación desconocido.")
-    parts = profile_parts({node: avatar.get(node, world=True) for node in avatar.nodes}, profile)
+    originals = {node: avatar.get(node, world=True) for node in avatar.nodes}
+    parts = profile_parts(originals, profile)
     body = parts[BODY]
     if not body.is_volume:
         raise ValueError("La exportación articulada requiere un cuerpo cerrado y orientado.")
@@ -487,6 +542,9 @@ def export_rigged_avatar(scene, path, influences=4, *, profile="Studio Original"
     facial = facial_morphs(body)
     glb = _GlbBuffers(trimesh.Scene(parts).export(file_type="glb", include_normals=True))
     data = glb.document
+    guides = hair_physics_guides(originals)
+    if guides:
+        data.setdefault("extras", {})["aethryxHairGuides"] = guides
     nodes = data["nodes"]
     joint_start = len(nodes)
     name_to_index = {name: index for index, name in enumerate(names)}
@@ -532,6 +590,8 @@ def export_rigged_avatar(scene, path, influences=4, *, profile="Studio Original"
                 ]
                 mesh_data["weights"] = [0.] * len(shapes)
                 mesh_data.setdefault("extras", {})["targetNames"] = list(shapes)
+    if profile == "VRChat PC Preserve Shape":
+        _batch_eye_details(glb, nodes[:joint_start])
     rest = glb.accessor(np.array([0., .75, 1.5]), "SCALAR", bounds=True)
     channels, samplers = [], []
     for joint, angle in demo_rotations().items():
@@ -615,6 +675,46 @@ class PosePreview:
         return transformed, points
 
 
+def finger_curl_rotations(skeleton, hand, degrees):
+    """Use the palm plane and each digit direction to define its flexion axis."""
+    names, _, positions = skeleton
+    if hand not in {"Left", "Right"} or not 0 <= degrees <= 90:
+        raise ValueError("Elige una mano y una flexión de 0 a 90 grados.")
+    fingers = ("Index", "Middle", "Ring", "Little")
+    wrist = positions[names.index(hand + "Hand")]
+    index = positions[names.index(hand + "IndexProximal")]
+    little = positions[names.index(hand + "LittleProximal")]
+    normal = np.cross(index - wrist, little - wrist)
+    if np.linalg.norm(normal) < 1e-10:
+        return {}
+    normal /= np.linalg.norm(normal)
+    if hand == "Right":
+        normal *= -1
+    rotations = {}
+    for finger in fingers:
+        proximal = hand + finger + "Proximal"
+        middle = hand + finger + "Intermediate"
+        direction = positions[names.index(middle)] - positions[names.index(proximal)]
+        axis = np.cross(direction, normal)
+        length = np.linalg.norm(axis)
+        if length > 1e-10:
+            rotations[proximal] = Rotation.from_rotvec(axis * (np.deg2rad(degrees) / length)).as_euler("xyz", degrees=True)
+    return rotations
+
+
+def hair_clearance_bodies(preview):
+    """Express posed collision bodies in the rigid head attachment's rest space."""
+    head = preview.skeleton[0].index("Head")
+    bodies = {}
+    for name, rotations in (("demostración", demo_rotations()), ("brazos elevados", preview.t_pose())):
+        vertices, _ = preview.evaluate(rotations)
+        body = preview.parts[BODY].copy()
+        body.vertices = vertices[BODY]
+        body.apply_transform(np.linalg.inv(pose_matrices(preview.skeleton, rotations)[head]))
+        bodies[name] = body
+    return bodies
+
+
 def component_pose_contacts(scene, node):
     """Check a component in rest, demonstration pose and raised arms."""
     from aethryx_modular import body_contacts
@@ -626,8 +726,9 @@ def component_pose_contacts(scene, node):
     poses = {"reposo": {}, "demostración": demo_rotations(), "brazos elevados": solver.t_pose()}
     if node.startswith("prenda-guante-dedos-"):
         hand = "Left" if node.endswith("-izquierdo") else "Right"
-        poses["flexión de dedos"] = {hand + finger + "Proximal": (20, 0, 0)
-                                     for finger in ("Index", "Middle", "Ring", "Little")}
+        poses["flexión anatómica de dedos"] = finger_curl_rotations(solver.skeleton, hand, 20)
+        poses["flexión de estrés (X)"] = {hand + finger + "Proximal": (20, 0, 0)
+                                         for finger in ("Index", "Middle", "Ring", "Little")}
     for name, pose in poses.items():
         vertices, _ = solver.evaluate(pose)
         body, component = (solver.parts[key].copy() for key in (BODY, node))

@@ -6,20 +6,40 @@ from unittest.mock import patch
 import numpy as np
 import trimesh
 
-from aethryx_anime import layered_hair, nikix_preset, sculpted_body
+from aethryx_anime import fitted_eye_details, layered_hair, nikix_preset, sculpted_body
 from aethryx_anatomy import load_body_template, semantic_visual_hull
 from aethryx_materials import unwrap_uv, uv_quality
 from aethryx_modular import (BODY, EYES, _repair_hair_seams, avatar_eye, body_contacts, clear_hair_penetrations, fit_component_to_patch,
                            fit_fingerless_gloves, fit_trousers,
                            fitted_eyelids, generated_hair_passes_review, refine_component_fit,
                            remove_nonmanifold_flaps, review_generated_hair)
-from aethryx_rig import PosePreview, _eyelid_morphs, component_pose_contacts, demo_rotations, profile_parts
+from aethryx_rig import (PosePreview, _GlbBuffers, _eyelid_morphs, component_pose_contacts,
+                         demo_rotations, export_rigged_avatar, profile_parts)
 from aethryx_profiles import BUNDLED_BODY
 from studio_project import generation_recovery_path, load_project, save_project
 from aethryx_tools import execute_tool
 
 
 class NikixEvolutionTests(unittest.TestCase):
+    def test_exact_profile_keeps_separate_eye_slots_in_one_skinned_node(self):
+        body = load_body_template(BUNDLED_BODY)
+        name = EYES[0]
+        eye = avatar_eye(body, True, "#6677dd")
+        parts = {BODY: body, name: eye}
+        for suffix, mesh in {**{f"parpado-{key}": value for key, value in fitted_eyelids(eye).items()},
+                             **fitted_eye_details(eye, left=True)}.items():
+            parts[f"{name}-{suffix}"] = mesh
+        with TemporaryDirectory() as folder:
+            output = Path(folder) / "pc.glb"
+            info = export_rigged_avatar(trimesh.Scene(parts), output, profile="VRChat PC Preserve Shape")
+            self.assertEqual(info["skinned_nodes"], 3)
+            glb = _GlbBuffers(output.read_bytes()).document
+            node = next(node for node in glb["nodes"] if node["name"] == f"{name}-parpado-par")
+            mesh = glb["meshes"][node["mesh"]]
+            self.assertEqual(len(mesh["primitives"]), 3)
+            self.assertEqual(mesh["extras"]["targetNames"], ["BlinkLeft", "Blink"])
+            self.assertTrue(all(len(primitive["targets"]) == 2 for primitive in mesh["primitives"]))
+
     def test_hair_clearance_removes_a_shallow_intersection_and_preserves_root_uv(self):
         body = trimesh.creation.icosphere(subdivisions=2)
         lock = trimesh.creation.icosphere(subdivisions=2, radius=.22)
