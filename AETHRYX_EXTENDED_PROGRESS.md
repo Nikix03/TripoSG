@@ -1,5 +1,10 @@
 # AETHRYX Studio · Genesis Extended
 
+## Genesis Continuation · Contexto real de KIRIA
+
+- El contexto de diagnóstico incluye los nodos geométricos de la escena activa, recuentos fuente de vértices y caras y visibilidad del visor. El catálogo conserva el permiso `read`; las pruebas confirman que los nodos pasan por el contexto autorizado y que entradas mal formadas no producen hallazgos falsos. Los nombres de nodo no se presentan como clasificación anatómica.
+- Pasaron las 99 pruebas completas y la compilación sintáctica de los archivos afectados.
+
 ## Genesis Continuation · Encuadre completo
 
 - Se verificó `AGENTS.md`, ambos documentos de progreso, el estado limpio de `codex/development` y la coincidencia del remoto `fork` con `8c1cb22`. La rama `copilot/continuation` parte de ese commit. Antes de los cambios pasaron las 94 pruebas existentes.

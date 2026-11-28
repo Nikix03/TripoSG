@@ -1249,6 +1249,7 @@ class AethryxStudio(tk.Tk):
         )
 
     def _kiria_context(self):
+        hidden_components = set(self._hidden_component_nodes())
         return {
             "project_id": self.project_path or "unsaved-project",
             "revision": "1",
@@ -1256,6 +1257,15 @@ class AethryxStudio(tk.Tk):
             "mesh_stats": self.model_stats,
             "model": self.current_model_path,
             "image": self.image_path.get(),
+            "scene_components": [
+                {
+                    "node": str(part["node"]),
+                    "vertices": int(part["source_vertices"]),
+                    "faces": int(part["source_faces"]),
+                    "visible": str(part["node"]) not in hidden_components,
+                }
+                for part in self.model_parts
+            ],
         }
 
     def show_project_diagnostics(self):

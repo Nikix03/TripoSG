@@ -1,5 +1,10 @@
 # Estado de AETHRYX Studio
 
+## Genesis Continuation · Diagnóstico local de escena
+
+- KIRIA recibe desde Studio los nodos efectivamente cargados, sus recuentos de vértices y caras de origen y su visibilidad actual. El diagnóstico informa esos componentes como nodos geométricos, sin inferir categorías anatómicas. El acceso sigue siendo local y de solo lectura.
+- Pasaron 99 pruebas, incluidas las comprobaciones del contexto de Studio, la lista permitida y entradas de componente inválidas.
+
 ## Genesis Continuation · Encuadre de cámaras
 
 - Continuación desde `codex/development` en `8c1cb22`, con el árbol verificado limpio. Se creó `copilot/continuation`; las 94 pruebas existentes pasaron antes de editar.

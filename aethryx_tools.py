@@ -86,7 +86,7 @@ def get_project_context(context):
     if not project_id or not revision:
         return {"status": "unavailable", "reason": "Faltan project_id o revision"}
     allowed = {}
-    for key in ("image", "model", "output", "references", "settings", "mesh_stats"):
+    for key in ("image", "model", "output", "references", "settings", "mesh_stats", "scene_components"):
         if key in context:
             allowed[key] = context[key]
     return {
@@ -126,6 +126,32 @@ def analyze_project_diagnostics(context):
         findings.append(f"Malla real cargada: {vertices} vertices y {faces} caras.")
     if not data.get("model"):
         findings.append("No hay modelo 3D importado en el proyecto.")
+    components = data.get("scene_components")
+    if isinstance(components, list):
+        valid_components = [
+            component for component in components
+            if isinstance(component, dict)
+            and isinstance(component.get("node"), str)
+            and isinstance(component.get("vertices"), int)
+            and isinstance(component.get("faces"), int)
+            and isinstance(component.get("visible"), bool)
+        ]
+        if valid_components:
+            visible_count = sum(component["visible"] for component in valid_components)
+            findings.append(
+                f"Objetos reales en la escena: {len(valid_components)}; "
+                f"visibles {visible_count}, ocultos {len(valid_components) - visible_count}."
+            )
+            findings.extend(
+                f"{component['node']}: {component['vertices']} vertices, "
+                f"{component['faces']} caras, "
+                f"{'visible' if component['visible'] else 'oculto'}."
+                for component in valid_components
+            )
+        elif components:
+            findings.append("Los datos de componentes de escena no tienen un formato válido.")
+        else:
+            findings.append("No hay componentes geométricos cargados en la escena.")
     return {
         "status": "available",
         "project_id": project["project_id"],
@@ -238,6 +264,7 @@ TOOL_REGISTRY = {
             "references": "array",
             "mesh_stats": "object",
             "model": "string",
+            "scene_components": "array<object>",
         },
         ("read",),
         True,
@@ -264,7 +291,7 @@ def execute_tool(name, inputs, project_context=None, write_allowed=False):
         context = dict(project_context or {})
         context.update({
             key: value for key, value in inputs.items()
-            if key in ("project_id", "revision", "references", "mesh_stats", "model")
+            if key in ("project_id", "revision", "references", "mesh_stats", "model", "scene_components")
         })
         if name == "get_project_context":
             return get_project_context(context)
