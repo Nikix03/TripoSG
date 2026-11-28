@@ -195,6 +195,11 @@ def inspect_component_geometry(path):
 
 
 TOOL_REGISTRY = {
+    "get_regional_candidate_review": ToolDefinition(
+        "get_regional_candidate_review",
+        "Muestra las métricas de la última priorización regional sin abrir ni exponer archivos.",
+        {}, ("read",), True, True,
+    ),
     "get_generation_preferences": ToolDefinition(
         "get_generation_preferences",
         "Muestra la selección del motor y la configuración local sin exponer rutas.",
@@ -319,6 +324,11 @@ def execute_tool(name, inputs, project_context=None, write_allowed=False):
             if isinstance(config, dict) and config:
                 return {"status": "available", "preferences": config}
             return {"status": "unavailable", "reason": "Abre la herramienta desde Studio."}
+        if name == "get_regional_candidate_review":
+            review = context.get("regional_candidate_review")
+            if review:
+                return {"status": "available", "candidates": review}
+            return {"status": "unavailable", "reason": "Aún no hay una priorización de candidatos."}
     if name == "list_scene_nodes":
         return list_scene_nodes(inputs.get("model_path", ""))
     if name == "get_mesh_statistics":

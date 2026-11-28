@@ -119,6 +119,9 @@ class GenesisExtendedTests(unittest.TestCase):
         left_lid, right_lid = (f"{eye}-parpado-superior" for eye in EYES)
         for eye, name in zip(EYES, (left_lid, right_lid)):
             scene.add_geometry(fitted_eyelids(scene.geometry[eye])["superior"], node_name=name, geom_name=name)
+        lower_lid = f"{EYES[0]}-parpado-inferior"
+        scene.add_geometry(fitted_eyelids(scene.geometry[EYES[0]])["inferior"],
+                           node_name=lower_lid, geom_name=lower_lid)
         preview = PosePreview(scene)
         rest, bind = preview.evaluate({})
         changed, t_points = preview.evaluate(preview.t_pose())
@@ -130,9 +133,16 @@ class GenesisExtendedTests(unittest.TestCase):
         eye, _ = preview.evaluate({"LeftEye": (0, 23, 0)})
         self.assertGreater(np.max(abs(eye[EYES[0]] - rest[EYES[0]])), .001)
         np.testing.assert_allclose(eye[EYES[1]], rest[EYES[1]], atol=1e-10)
-        blinking, _ = preview.evaluate({}, "BlinkLeft", 1)
+        blinking, _ = preview.evaluate({}, {"BlinkLeft": 1, "vrc.v_aa": .4})
         self.assertGreater(np.max(abs(blinking[left_lid] - rest[left_lid])), .001)
         np.testing.assert_allclose(blinking[right_lid], rest[right_lid], atol=1e-10)
+        center = scene.geometry[EYES[0]].bounds.mean(axis=0)[0]
+        upper = abs(rest[left_lid][:, 0] - center) < .001
+        lower = abs(rest[lower_lid][:, 0] - center) < .001
+        open_gap = rest[left_lid][upper, 1].min() - rest[lower_lid][lower, 1].max()
+        closed_gap = blinking[left_lid][upper, 1].min() - blinking[lower_lid][lower, 1].max()
+        self.assertGreater(open_gap, 0)
+        self.assertLess(abs(closed_gap), .25 * open_gap)
 
     def test_preview_hides_regions_without_removing_body_faces(self):
         body = self.body.copy()

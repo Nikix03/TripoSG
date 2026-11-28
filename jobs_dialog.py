@@ -1,12 +1,13 @@
 """Review and run persistent TripoSG component jobs in Studio."""
 
 from pathlib import Path
+from contextlib import ExitStack
 import sqlite3
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from PIL import Image, ImageTk
-from aethryx_generation import compare_candidates
+from aethryx_generation import compare_candidates, rank_regional_candidates
 
 
 STATUS_LABELS = {
@@ -31,6 +32,7 @@ class JobsDialog(tk.Toplevel):
         self.list.column("attempt", width=75, stretch=False)
         self.list.pack(fill="both", expand=True, padx=8, pady=8)
         self.list.bind("<<TreeviewSelect>>", self.show_details)
+        self.list.bind("<Control-r>", lambda _event: self.perform(self.rank))
         self.details = tk.StringVar()
         ttk.Label(self, textvariable=self.details, wraplength=665).pack(fill="x", padx=8)
         actions = ttk.Frame(self, padding=8)
@@ -42,6 +44,7 @@ class JobsDialog(tk.Toplevel):
             ("Historial", self.history),
             ("Comparar…", self.compare),
             ("Ajustar a región…", self.fit_region),
+            ("Priorizar…", self.rank),
         ):
             ttk.Button(actions, text=label, command=lambda operation=action: self.perform(operation)).pack(side="left")
         self.refresh()
@@ -83,7 +86,11 @@ class JobsDialog(tk.Toplevel):
     def add(self):
         name = simpledialog.askstring("Registrar componente", "Nombre del componente", parent=self)
         if name and name.strip():
-            self.jobs.add(name.strip(), self.studio.component_job_parameters())
+            parameters = self.studio.component_job_parameters(resolve=False)
+            def register(engine):
+                self.jobs.add(name.strip(), {**parameters, "engine": engine})
+                self.refresh()
+            self.studio.resolve_engine_async(parameters["engine"], parameters["engine_options"], register, self)
 
     def run(self):
         row = self.selected()
@@ -153,6 +160,54 @@ class JobsDialog(tk.Toplevel):
             "path": row["result"], "engine": row["parameters"].get("engine", "triposg"),
             "job": row["id"], "attempt": row["attempt"],
         })
+
+    def rank(self):
+        row = self.selected()
+        if not row:
+            return
+        candidates = [{"path": other["result"], "engine": other["parameters"].get("engine", "triposg"),
+                       "job": other["id"], "attempt": other["attempt"]}
+                      for other in self.rows.values() if other["component"] == row["component"]
+                      and other["result"] and other["status"] in {"complete", "accepted"}]
+        if len(candidates) < 2:
+            raise ValueError("Registra al menos dos resultados con el mismo nombre de componente.")
+        directory = filedialog.askdirectory(parent=self, title="Carpeta con front.png, side.png o back.png con alfa")
+        if not directory:
+            return
+        with ExitStack() as stack:
+            masks = {name: stack.enter_context(Image.open(Path(directory) / f"{name}.png"))
+                     for name in ("front", "side", "back") if (Path(directory) / f"{name}.png").is_file()}
+            body, guide = None, None
+            indices = self.studio._selected_part_indices()
+            if self.studio.loaded_scene is not None and len(indices) == 1:
+                from aethryx_modular import BODY, ModularAvatar
+                avatar = ModularAvatar(self.studio.loaded_scene)
+                node = self.studio.model_parts[indices[0]]["node"]
+                if node != BODY and BODY in avatar.nodes:
+                    body, guide = avatar.get(BODY, world=True), avatar.get(node, world=True)
+            ranked = rank_regional_candidates(candidates, masks, body=body, guide=guide)
+        self.studio.regional_review = [
+            {key: candidate[key] for key in ("engine", "iou", "topology", "contacts", "position",
+                                             "score", "eligible", "confidence")}
+            for candidate in ranked
+        ]
+        lines = []
+        for candidate in ranked:
+            iou = " / ".join(f"{view} {value:.1%}" for view, value in candidate["iou"].items())
+            edges = candidate["topology"]
+            lines.append(f"{candidate['engine']} · {iou} · puntuación {candidate['score']:.1%}\n"
+                         f"{edges['boundary_edges']} bordes abiertos · {edges['nonmanifold_edges']} no manifold")
+            if candidate["contacts"] is not None:
+                lines[-1] += (f" · {candidate['contacts']['contacts']} contactos · "
+                              f"{candidate['contacts']['inside']} interiores · "
+                              f"desplazamiento {candidate['position']:.1%} de la altura")
+        best = ranked[0]
+        if best["eligible"]:
+            self.list.selection_set(best["job"])
+            self.list.see(best["job"])
+        summary = ("Se midió la posición sobre la guía activa." if guide is not None
+                   else "Evidencia limitada a silueta y topología. Revisa el ajuste sobre el avatar.")
+        messagebox.showinfo("Prioridad por región", "\n\n".join(lines) + "\n\n" + summary, parent=self)
 
     def review(self, status):
         row = self.selected()

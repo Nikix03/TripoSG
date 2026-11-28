@@ -376,11 +376,20 @@ def _eyelid_morphs(name, parts):
             continue
         eyelid, globe = parts[name], parts[eye]
         upper = name.endswith("-superior")
-        displacement = np.zeros((len(eyelid.vertices), 3), dtype=np.float32)
-        lid_center = eyelid.bounds[:, 1].mean()
-        globe_center = globe.bounds[:, 1].mean()
-        displacement[:, 1] = (globe_center - lid_center) * (.83 if upper else .72)
-        displacement[:, 2] = globe.extents[2] * .055
+        radii = globe.extents / 2
+        if np.any(radii <= 0):
+            return {}
+        x, y, _ = ((eyelid.vertices - globe.bounds.mean(axis=0)) / radii).T
+        arc = np.sqrt(np.maximum(0, 1 - x * x))
+        tilt = .09 * x
+        sign = 1 if upper else -1
+        opening = .49 if upper else .53
+        latitude = sign * (y - tilt) / np.maximum(arc, .05)
+        influence = np.clip((.96 - latitude) / (.96 - opening), 0, 1)
+        target = y + influence * (-.06 + sign * (.075 - opening)) * arc
+        surface = lambda v: np.sqrt(np.maximum(0, 1 - x * x - v * v))
+        displacement = np.column_stack((np.zeros(len(x)), (target - y) * radii[1],
+                                        (surface(target) - surface(y)) * radii[2])).astype(np.float32)
         return {f"Blink{side}": displacement, "Blink": displacement.copy()}
     return {}
 

@@ -90,3 +90,36 @@ def compare_candidates(paths, image, view):
         results.append({"path": str(path), "overlay": overlay, "iou": iou, "faces": len(mesh.faces),
                         "closed": bool(mesh.is_volume)})
     return results
+
+
+def rank_regional_candidates(candidates, references, *, body=None, guide=None):
+    """Rank comparable silhouettes and keep anatomical validation explicit."""
+    import numpy as np
+    import trimesh
+    from aethryx_modular import body_contacts
+
+    if not references or set(references) - {"front", "side", "back"}:
+        raise ValueError("Carga máscaras frontal, lateral o posterior.")
+    if (body is None) != (guide is None):
+        raise ValueError("La validación anatómica requiere cuerpo y guía regional.")
+    paths = [item["path"] for item in candidates]
+    scores = {view: compare_candidates(paths, image, view) for view, image in references.items()}
+    rows = []
+    for index, item in enumerate(candidates):
+        mesh = trimesh.load(item["path"], force="scene", process=False).dump(concatenate=True)
+        incidence = np.bincount(mesh.edges_unique_inverse)
+        ious = {view: items[index]["iou"] for view, items in scores.items()}
+        topology = {"closed": bool(mesh.is_volume), "boundary_edges": int((incidence == 1).sum()),
+                    "nonmanifold_edges": int((incidence > 2).sum())}
+        contacts = body_contacts(body, mesh) if body is not None else None
+        position = None
+        if guide is not None:
+            position = float(np.linalg.norm(mesh.centroid - guide.centroid) / body.extents[1])
+        eligible = topology["closed"] and (contacts is None or (
+            contacts["contacts"] == contacts["inside"] == 0 and position <= .05
+        ))
+        score = .7 * float(np.mean(list(ious.values()))) + .3 * min(ious.values())
+        rows.append({**item, "iou": ious, "topology": topology, "contacts": contacts, "position": position,
+                     "eligible": eligible, "score": score,
+                     "confidence": "three-views-and-guide" if len(ious) == 3 and guide is not None else "limited"})
+    return sorted(rows, key=lambda row: (row["eligible"], row["score"]), reverse=True)

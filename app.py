@@ -10,6 +10,7 @@ import threading
 import tkinter as tk
 import traceback
 from collections import deque
+from queue import Empty, Queue
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import numpy as np
@@ -102,6 +103,8 @@ class AethryxStudio(tk.Tk):
         self.component_jobs = None
         self.jobs_dialog = None
         self.active_component_job = None
+        self.engine_probe_active = False
+        self.regional_review = []
         self.engine_settings_path = generation_recovery_directory() / "engines.json"
         try:
             config = json.loads(self.engine_settings_path.read_text(encoding="utf-8"))
@@ -543,7 +546,7 @@ class AethryxStudio(tk.Tk):
             self.append_log(f"No se pudo mostrar la imagen: {exc}")
 
     def _workspace_available(self):
-        if self.generation_active or self.model_loading:
+        if self.generation_active or self.model_loading or getattr(self, "engine_probe_active", False):
             self.status.set("Espera a que termine la operación actual.")
             return False
         return True
@@ -1294,6 +1297,7 @@ class AethryxStudio(tk.Tk):
             "model": self.current_model_path,
             "image": self.image_path.get(),
             "component_job_counts": queue,
+            "regional_candidate_review": getattr(self, "regional_review", []),
             "generation_preferences": {
                 "engine": self.engine.get(),
                 "triposr_configured": all(self.triposr_options.get(key) for key in TRIPOSR_FILES),
@@ -1785,6 +1789,40 @@ class AethryxStudio(tk.Tk):
         save_engine_settings(self.engine_settings_path,
                              {"preference": self.engine.get(), "triposr": self.triposr_options})
 
+    def resolve_engine_async(self, preference, options, complete, parent=None):
+        if self.engine_probe_active:
+            return
+        if preference == "triposg":
+            complete(preference)
+            return
+        self.engine_probe_active = True
+        self.status.set("Comprobando el motor local…")
+        result = Queue()
+
+        def worker():
+            try:
+                result.put((True, choose_engine(preference, options, PYTHON, ROOT)))
+            except (OSError, ValueError) as exc:
+                result.put((False, str(exc)))
+
+        def poll():
+            try:
+                ok, value = result.get_nowait()
+            except Empty:
+                self.after(40, poll)
+                return
+            self.engine_probe_active = False
+            if parent is not None and not parent.winfo_exists():
+                return
+            if ok:
+                complete(value)
+            else:
+                self.status.set("Motor local no disponible.")
+                messagebox.showerror("Motor local", value, parent=parent or self)
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(40, poll)
+
     def configure_triposr(self):
         if not self._workspace_available():
             return
@@ -1801,13 +1839,20 @@ class AethryxStudio(tk.Tk):
             if not value:
                 return
             options[key] = value
-        try:
-            choose_engine("triposr", options, PYTHON, ROOT)
+        resolution = simpledialog.askinteger("Resolución TripoSR", "Rejilla de extracción. Elige 96, 128, 192 o 256.",
+                                             initialvalue=self.triposr_options.get("resolution", 128), parent=self)
+        if resolution is None:
+            return
+        if resolution not in (96, 128, 192, 256):
+            messagebox.showerror("Resolución TripoSR", "Elige 96, 128, 192 o 256.")
+            return
+        options["resolution"] = resolution
+
+        def save(_engine):
             self.triposr_options = options
             self._save_engine_preferences()
             self.status.set("TripoSR disponible con CUDA. Selecciónalo en el panel de generación.")
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("Configurar TripoSR", str(exc))
+        self.resolve_engine_async("triposr", options, save)
 
     def open_component_jobs(self):
         if self.jobs_dialog and self.jobs_dialog.winfo_exists():
@@ -1819,7 +1864,7 @@ class AethryxStudio(tk.Tk):
         except (OSError, sqlite3.Error) as exc:
             messagebox.showerror("Cola de componentes", str(exc))
 
-    def component_job_parameters(self):
+    def component_job_parameters(self, *, resolve=True):
         settings = {key: getattr(self, key).get() for key in ("steps", "faces", "seed", "guidance")}
         validate_settings(**settings)
         image = self.image_path.get().strip()
@@ -1827,8 +1872,10 @@ class AethryxStudio(tk.Tk):
         output = self.output_path.get().strip()
         if not Path(actual).is_file() or Path(output).suffix.lower() != ".glb":
             raise ValueError("Selecciona una referencia existente y una ruta de salida GLB.")
-        engine = choose_engine(self.engine.get(), self.triposr_options, PYTHON, ROOT)
-        options = {"resolution": 128, **self.triposr_options} if engine == "triposr" else {}
+        engine = self.engine.get()
+        if resolve:
+            engine = choose_engine(engine, self.triposr_options, PYTHON, ROOT)
+        options = {"resolution": 128, **self.triposr_options} if engine != "triposg" else {}
         return {"image": os.path.abspath(image or actual), "output": os.path.abspath(output),
                 "settings": settings, "references": self.reference_regions, "engine": engine,
                 "engine_options": options}
@@ -1898,7 +1945,7 @@ class AethryxStudio(tk.Tk):
         except OSError as exc:
             self.append_log(f"No se pudo actualizar la recuperación de TripoSG. {exc}")
 
-    def generate(self, *, queued_job=None, engine=None, engine_options=None):
+    def generate(self, *, queued_job=None, engine=None, engine_options=None, resolved=False):
         if not self._workspace_available():
             return
         image, primary_region = generation_reference(self.reference_regions, self.image_path.get().strip())
@@ -1920,7 +1967,19 @@ class AethryxStudio(tk.Tk):
             seed, guidance = self.seed.get(), self.guidance.get()
             validate_settings(steps, faces, seed, guidance)
             engine_options = self.triposr_options if engine_options is None else engine_options
-            engine = choose_engine(engine or self.engine.get(), engine_options, PYTHON, ROOT)
+            engine = engine or self.engine.get()
+            if engine != "triposg" and not resolved:
+                fields = (self.image_path, self.output_path, self.steps, self.faces, self.seed, self.guidance)
+                snapshot = tuple(field.get() for field in fields)
+
+                def ready(selected):
+                    if tuple(field.get() for field in fields) != snapshot:
+                        self.status.set("Los parámetros cambiaron durante la comprobación. Inicia la generación de nuevo.")
+                        return
+                    self.generate(queued_job=queued_job, engine=selected, engine_options=engine_options, resolved=True)
+
+                self.resolve_engine_async(engine, dict(engine_options), ready)
+                return
             output = os.path.abspath(output)
             if os.path.exists(output) and not messagebox.askyesno("Reemplazar GLB", f"¿Reemplazar el archivo existente si la generación es válida?\n{output}"):
                 return

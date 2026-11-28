@@ -1,5 +1,15 @@
 # Estado de AETHRYX Studio
 
+## 28 de noviembre de 2026 · Genesis Harmony
+
+- Pasaron las 115 pruebas con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
+- La cola prioriza candidatos de un mismo componente con máscaras frontal, lateral y posterior. Informa IoU, cierre, bordes abiertos y no manifold. Cuando hay cuerpo y guía activa, mide contactos, vértices interiores y desplazamiento de centroide sobre las mallas colocadas. El resultado selecciona un candidato para revisar y KIRIA consulta sus métricas sin exponer rutas.
+- Las sondas de motor de Studio avanzan fuera del hilo de Tk. La configuración persistente de TripoSR permite rejillas de 96, 128, 192 y 256. En el ensayo real desde Studio, la rejilla de 96 produjo un volumen de 5.840 caras y 2.922 vértices en 45,73 s, con 1.867,5 MiB de pico asignado. Tk procesó 221 ciclos de observación durante la sonda.
+- El parpadeo deforma los párpados sobre la envolvente del ojo y se combina con visemas. En la prueba privada, la abertura central pasó de 8,26 mm en reposo a 0,054 mm de solape con Blink completo y visema aa al 40 %. Se guardó una comparación local con cámaras e iluminación fijas.
+- El avatar integral conserva cuerpo ajustado a tres vistas, ojos y párpados procedurales, cabello procedural guiado por máscara, camiseta procedural y un color capilar agregado de las tres perspectivas. Se guardaron un GLB modular y otro articulado. La auditoría local confirmó 53 articulaciones, 15 visemas y 29 nodos con skinning. La camiseta pasó tres poses con cero contactos y vértices interiores.
+- El contorno frontal ajusta lateralmente las curvas de los mechones largos, mantiene la forma cerca de la cara y conserva la guía de raíces. La validación revirtió dos variantes que empeoraron el contacto. Persisten contactos con el cuerpo en 14 de 21 piezas capilares. El avatar es un prototipo de integración.
+- Unity volvió a rechazar el arranque batch por falta de licencia activa. La clasificación de VRChat, el menú de vestuario, Poiyomi, la normalización esquelética completa entre vistas, los guantes con dedos y el cabello generativo aceptado siguen pendientes. Los activos y la evidencia de Nikix quedaron en el directorio privado.
+
 ## 28 de noviembre de 2026 · Genesis Fusion
 
 - Pasaron las 114 pruebas de Studio con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.

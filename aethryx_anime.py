@@ -201,7 +201,8 @@ def sculpted_face_parts(body, colors=("#6589d4", "#ae6798")):
     return parts
 
 
-def layered_hair(body, *, ribbons=True, length=.60, root=None, tips=None, follow_scalp=False):
+def layered_hair(body, *, ribbons=True, length=.60, root=None, tips=None, follow_scalp=False,
+                 frontal_outline=None):
     """Original swept locks with separate textures and UVs following their lengths."""
     if not 0 <= length <= 1:
         raise ValueError("La longitud del cabello debe estar entre 0 y 1.")
@@ -226,6 +227,10 @@ def layered_hair(body, *, ribbons=True, length=.60, root=None, tips=None, follow
         if len(scalp):
             root_guide = cKDTree(scalp)
     t = np.linspace(0., 1., 36)
+    outline = np.asarray(frontal_outline, dtype=float) if frontal_outline is not None else None
+    if outline is not None and (outline.ndim != 2 or outline.shape[1] != 3 or len(outline) < 2
+                               or not np.isfinite(outline).all() or np.any(np.diff(outline[:, 0]) <= 0)):
+        raise ValueError("El contorno capilar necesita filas Y crecientes con límites de X.")
     for index, angle in enumerate(np.linspace(-np.pi, np.pi, 20, endpoint=False)):
         front = np.cos(angle) > .48
         tip = tips[0 if np.sin(angle) < 0 else 1]
@@ -250,6 +255,14 @@ def layered_hair(body, *, ribbons=True, length=.60, root=None, tips=None, follow
             radii = np.column_stack((width, width * (.26 if front else .20)))
             sides = 14
         curve = np.column_stack((x, y, z))
+        if outline is not None and not front:
+            side = -1 if np.sin(angle) < 0 else 1
+            limit = np.interp(y, outline[:, 0], outline[:, 1 if side < 0 else 2])
+            # Keep roots and the facial band fixed. Widen only toward the observed outer boundary.
+            influence = np.clip((t - .30) / .70, 0, 1) * np.clip((crown - y - .12 * height) / (.09 * height), 0, 1)
+            observed = (y >= outline[0, 0]) & (y <= outline[-1, 0])
+            correction = np.clip(side * (limit - x), 0, .04 * height)
+            curve[:, 0] += side * correction * influence * observed * abs(np.sin(angle))
         if root_guide is not None:
             vertex = root_guide.query(curve[0])[1]
             displacement = root_guide.data[vertex] - curve[0]

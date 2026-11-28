@@ -43,6 +43,24 @@ def reconstruct(manifest_path):
     return reconstruct_data(data, manifest_path.parent)
 
 
+def frontal_hair_outline(mask, color, projection):
+    """Sample robust horizontal limits in the model frame from a frontal hair mask."""
+    matrix = np.asarray(projection, dtype=float)
+    if (mask is None or matrix.shape != (2, 4) or matrix[0, 0] <= 0 or matrix[1, 1] >= 0
+            or not np.allclose(matrix[0, 1:3], 0) or not np.allclose(matrix[1, (0, 2)], 0)):
+        return None
+    selected = np.all(mask == color, axis=2)
+    occupied = np.flatnonzero(selected.sum(axis=1) >= 8)
+    if len(occupied) < 2:
+        return None
+    rows = occupied[np.unique(np.linspace(0, len(occupied) - 1, min(40, len(occupied))).astype(int))]
+    outline = []
+    for row in rows[::-1]:
+        limits = (np.quantile(np.flatnonzero(selected[row]), [.03, .97]) - matrix[0, 3]) / matrix[0, 0]
+        outline.append([(row - matrix[1, 3]) / matrix[1, 1], *limits.tolist()])
+    return outline
+
+
 def load_body_template(path):
     mesh = trimesh.load(path, force="mesh", process=False)
     if not isinstance(mesh, trimesh.Trimesh) or not len(mesh.faces) or not np.isfinite(mesh.vertices).all():
@@ -196,6 +214,11 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
                                   for name, (_, use_vertical) in zip(names, axes)},
             "excluded_vertical_observations": excluded_vertical,
         }
+        if "front" in names and "hair" in data.get("palette", {}):
+            index = names.index("front")
+            outline = frontal_hair_outline(masks[index], data["palette"]["hair"], data["views"]["front"]["projection"])
+            if outline is not None:
+                deformation_report["reference_evidence"]["frontal_hair_outline"] = outline
     return mesh, patches, errors
 
 
@@ -379,12 +402,30 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
         components = [{"name": "cuerpo-base", "role": "body", "file": body.name}]
         if data.get("export_hybrid") is True:
             from aethryx_modular import (
-                EYES, apply_material, avatar_eye, fit_garment_with_clearance, fitted_eyelids, regional_hair,
+                EYES, apply_material, avatar_eye, body_contacts, fit_garment_with_clearance, fitted_eyelids, regional_hair,
             )
 
             colors = report.get("reference_evidence", {}).get("visible_regional_colors", {})
             hair_options = {"root": colors["hair"]} if "hair" in colors else {}
-            pieces = {"cuerpo-base": mesh, **regional_hair(mesh, **hair_options)}
+            outline = report.get("reference_evidence", {}).get("frontal_hair_outline")
+            hair_review = {}
+            if outline:
+                from aethryx_anime import layered_hair
+                hair = layered_hair(mesh, follow_scalp=True, frontal_outline=outline, **hair_options)
+                baseline = layered_hair(mesh, follow_scalp=True, **hair_options)
+                for name, piece in hair.items():
+                    contacts = body_contacts(mesh, piece)
+                    retained = True
+                    if not piece.is_volume or any(contacts.values()):
+                        original_contacts = body_contacts(mesh, baseline[name])
+                        if not piece.is_volume or any(
+                            contacts[key] > original_contacts[key] for key in contacts
+                        ):
+                            hair[name], contacts, retained = baseline[name], original_contacts, False
+                    hair_review[name] = {**contacts, "guided_shape_retained": retained}
+            else:
+                hair = regional_hair(mesh, **hair_options)
+            pieces = {"cuerpo-base": mesh, **hair}
             for eye_name, left, color in zip(EYES, (True, False), ("#6589d4", "#ae6798")):
                 eye = avatar_eye(mesh, left, color)
                 pieces[eye_name] = eye
@@ -401,6 +442,8 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
                 "body": "deformed_template", "procedural_parts": sorted(set(pieces) - {"cuerpo-base"}),
                 "shirt_rest_clearance_height_fraction": clearance,
                 "transferred_base_colors": colors,
+                "hair_guidance": "frontal_semantic_outline" if outline else "procedural_body_frame",
+                "hair_rest_review": hair_review,
             }}
         else:
             hybrid = None

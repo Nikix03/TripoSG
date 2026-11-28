@@ -7,12 +7,29 @@ from PIL import ImageDraw
 import trimesh
 
 from aethryx_engines import prepare_character_alpha
-from aethryx_generation import choose_engine, compare_candidates
+from aethryx_generation import choose_engine, compare_candidates, rank_regional_candidates
 from aethryx_jobs import ComponentJobs
 from aethryx_tools import execute_tool
 
 
 class ComponentJobTests(unittest.TestCase):
+    def test_regional_ranking_prioritizes_closed_geometry_over_silhouette(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            image = Image.new("RGBA", (100, 100))
+            ImageDraw.Draw(image).rectangle((25, 25, 75, 75), fill="white")
+            mesh = trimesh.creation.box(extents=[.8, 1, .8])
+            closed, opened = root / "closed.glb", root / "opened.glb"
+            mesh.export(closed)
+            mesh.update_faces(list(range(1, len(mesh.faces))))
+            mesh.export(opened)
+            ranked = rank_regional_candidates([{"path": str(opened)}, {"path": str(closed)}],
+                                              dict.fromkeys(("front", "side", "back"), image))
+            self.assertTrue(ranked[0]["eligible"])
+            self.assertFalse(ranked[1]["eligible"])
+            self.assertGreater(ranked[1]["topology"]["boundary_edges"], 0)
+            self.assertEqual(ranked[0]["confidence"], "limited")
+
     def test_auto_falls_back_and_candidates_share_reference_framing(self):
         with TemporaryDirectory() as folder:
             root = Path(folder)
