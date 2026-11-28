@@ -723,7 +723,10 @@ class AethryxStudio(tk.Tk):
         self.append_log(f"Genesis: cuerpo base guardado en {body}")
         if patches:
             self.append_log(f"Genesis: parches de referencia disponibles para importar en {patches}")
-        self.load_model(str(body), edit=True)
+        modular = Path(body).parent / "avatar-modular.glb"
+        if modular.is_file():
+            self.append_log(f"Genesis: avatar articulado guardado en {modular.with_name('avatar-articulado.glb')}")
+        self.load_model(str(modular if modular.is_file() else body), edit=True)
 
     def _hidden_component_nodes(self):
         return [part["node"] for part, artist in zip(self.model_parts, self.mesh_artists)

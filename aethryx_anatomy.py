@@ -336,16 +336,37 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
         trimesh.Scene({"cuerpo-base": mesh}).export(body, file_type="glb")
         modular = None
         components = [{"name": "cuerpo-base", "role": "body", "file": body.name}]
-        if data.get("export_rig") is True:
+        if data.get("export_hybrid") is True:
+            from aethryx_modular import EYES, avatar_eye, fit_garment_with_clearance, fitted_eyelids, regional_hair
+
+            pieces = {"cuerpo-base": mesh, **regional_hair(mesh)}
+            for eye_name, left, color in zip(EYES, (True, False), ("#6589d4", "#ae6798")):
+                eye = avatar_eye(mesh, left, color)
+                pieces[eye_name] = eye
+                for lid, part in fitted_eyelids(eye).items():
+                    pieces[f"{eye_name}-parpado-{lid}"] = part
+            pieces["ropa-camiseta"], clearance = fit_garment_with_clearance(mesh, .016, .006, "top")
+            hybrid = trimesh.Scene(pieces)
+            hybrid.export(output / "avatar-modular.glb", file_type="glb")
+            components.append({"name": "avatar-modular", "role": "modular-avatar", "file": "avatar-modular.glb"})
+            report = {**report, "hybrid_evidence": {
+                "body": "deformed_template", "procedural_parts": sorted(set(pieces) - {"cuerpo-base"}),
+                "shirt_rest_clearance_height_fraction": clearance,
+            }}
+        else:
+            hybrid = None
+        if data.get("export_rig") is True or hybrid is not None:
             from aethryx_bridge import inspect_avatar_glb
             from aethryx_rig import export_rigged_avatar
 
-            rigged = output / "cuerpo-articulado.glb"
-            export_rigged_avatar(trimesh.Scene({"cuerpo-base": mesh}), rigged)
+            name = "avatar-articulado" if hybrid is not None else "cuerpo-articulado"
+            rigged = output / f"{name}.glb"
+            export_rigged_avatar(hybrid if hybrid is not None else trimesh.Scene({"cuerpo-base": mesh}), rigged)
             diagnostic = inspect_avatar_glb(rigged)
             if not diagnostic["valid_native_glb"]:
                 raise ValueError("El rig del cuerpo no pasó la comprobación GLB.")
-            components.append({"name": "cuerpo-articulado", "role": "rigged-body", "file": rigged.name})
+            components.append({"name": name, "role": "rigged-avatar" if hybrid is not None else "rigged-body",
+                               "file": rigged.name})
         if set(patches.geometry) - {"sin-asignar"}:
             modular = output / "parches.glb"
             patches.export(modular, file_type="glb")

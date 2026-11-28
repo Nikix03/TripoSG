@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 SEMANTIC_COLORS = {
@@ -181,6 +181,37 @@ def remove_mask_islands(mask, palette, minimum_area):
     return Image.fromarray(labels)
 
 
+def retain_mask_polygon(mask, vertices):
+    """Keep existing labels inside an operator-marked panel or silhouette."""
+    points = np.asarray(vertices, dtype=float)
+    if (points.ndim != 2 or points.shape[1] != 2 or len(points) < 3
+            or not np.isfinite(points).all() or np.any(points < 0)
+            or np.any(points >= mask.size) or cv2.contourArea(points.astype(np.float32)) < 1):
+        raise ValueError("Marca al menos tres puntos de un contorno válido dentro de la imagen.")
+    keep = Image.new("L", mask.size)
+    ImageDraw.Draw(keep).polygon([tuple(point) for point in points], fill=255)
+    result = Image.new(mask.mode, mask.size)
+    result.paste(mask, mask=keep)
+    return result
+
+
+def pose_points_for_view(points, view):
+    """Exclude automatic facial landmarks from rear-view correspondences."""
+    return {joint: point for joint, point in points.items() if view != "back" or joint >= 11}
+
+
+def vertical_pose_disagreements(observations, tolerance=.06):
+    """Flag projected height differences between calibrated views for review."""
+    heights = {}
+    for calibration, points in observations:
+        if calibration is None:
+            continue
+        (_, floor), crown = calibration
+        for joint, (_, y) in points.items():
+            heights.setdefault(joint, []).append((floor - y) / (floor - crown))
+    return sorted(joint for joint, values in heights.items() if max(values) - min(values) > tolerance)
+
+
 def foreground_crop_diagnostics(mask):
     """Report edge contact and secondary foreground without changing the mask.
 
@@ -203,7 +234,7 @@ def foreground_crop_diagnostics(mask):
             "secondary_fraction": (pixels - largest) / pixels if pixels else 0.0}
 
 
-def reference_silhouette(image, semantic_mask=None):
+def reference_silhouette(image, semantic_mask=None, *, allow_border=False):
     explicit = semantic_mask is not None
     if semantic_mask is not None:
         if semantic_mask.size != image.size:
@@ -229,7 +260,7 @@ def reference_silhouette(image, semantic_mask=None):
     area = np.count_nonzero(foreground)
     if not .02 * foreground.size <= area <= .93 * foreground.size:
         return None
-    if foreground[[0, -1]].any() or foreground[:, [0, -1]].any():
+    if not allow_border and (foreground[[0, -1]].any() or foreground[:, [0, -1]].any()):
         return None
     return foreground
 
@@ -307,9 +338,9 @@ def decode_semantic_scores(output, size, labels):
     return np.asarray([SEMANTIC_COLORS[label] for label in labels], dtype=np.uint8)[indices]
 
 
-def compare_silhouette(mesh, image, projection, semantic_mask=None, maximum_size=640):
+def compare_silhouette(mesh, image, projection, semantic_mask=None, maximum_size=640, *, allow_border=False):
     original_size = image.size
-    reference = reference_silhouette(image, semantic_mask)
+    reference = reference_silhouette(image, semantic_mask, allow_border=allow_border)
     image = image.convert("RGB")
     image.thumbnail((maximum_size, maximum_size), Image.Resampling.LANCZOS)
     width, height = image.size

@@ -22,7 +22,7 @@ from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
 from aethryx_reference import (
     AnimeSilhouette, SEE_THROUGH_COLORS, SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, profile_opposite,
     foreground_crop_diagnostics, named_reference_views, reference_silhouette, refine_visible_mask,
-    segment_anime_reference,
+    pose_points_for_view, segment_anime_reference, vertical_pose_disagreements,
     segment_see_through_v2, semantic_reference_regions, silhouette_calibration,
 )
 from proportion_dialog import ProportionDialog
@@ -66,6 +66,7 @@ class AnatomyDialog(tk.Toplevel):
         self.comparison_mode = tk.BooleanVar(value=False)
         self.visual_hull = tk.BooleanVar(value=False)
         self.export_rig = tk.BooleanVar(value=False)
+        self.export_hybrid = tk.BooleanVar(value=False)
         self.infer_occlusion_depth = tk.BooleanVar(value=False)
         self.segmenter = None
         self.see_through = None
@@ -103,6 +104,7 @@ class AnatomyDialog(tk.Toplevel):
             ("Máscara corporal…", self._load_body_mask),
             ("Paleta…", self._edit_palette),
             ("Segmentar ONNX…", self._segment_current),
+            ("Reparar silueta…", self._repair_body_mask),
         ):
             ttk.Button(toolbar, text=label, command=command).pack(side="left", padx=3)
         ttk.Label(toolbar, textvariable=self.status, wraplength=360).pack(side="left", padx=10)
@@ -163,6 +165,7 @@ class AnatomyDialog(tk.Toplevel):
                         command=self._redraw).pack(side="left")
         ttk.Checkbutton(controls, text="Volumen semántico", variable=self.visual_hull).pack(side="left", padx=4)
         ttk.Checkbutton(controls, text="Exportar rig GLB", variable=self.export_rig).pack(side="left", padx=4)
+        ttk.Checkbutton(controls, text="Avatar con cara, cabello y camiseta", variable=self.export_hybrid).pack(side="left", padx=4)
         ttk.Checkbutton(controls, text="Inferir puntos ocluidos", variable=self.infer_occlusion_depth).pack(side="left", padx=4)
         ttk.Button(controls, text="Reconstruir y validar…", command=self._fit).pack(side="right")
 
@@ -296,6 +299,50 @@ class AnatomyDialog(tk.Toplevel):
 
     def _load_body_mask(self):
         self._select_mask("body_mask", "Silueta corporal")
+
+    def _repair_body_mask(self):
+        view = self.view
+        if self.busy or view not in self.images:
+            return
+        image = self.images[view]
+        state = self.views[view]
+
+        def edit(mask):
+            editor = MaskDialog(self, image, mask, {"background": (0, 0, 0), "silueta": (255, 255, 255)})
+            self.wait_window(editor)
+            if editor.result is None:
+                return
+            if not editor.result.getbbox():
+                self._error(ValueError("La silueta quedó vacía."))
+                return
+            path = filedialog.asksaveasfilename(parent=self, initialfile=f"{view}-silueta-revisada.png",
+                                                 defaultextension=".png", filetypes=[("PNG", "*.png")])
+            if not path:
+                return
+            try:
+                with Path(path).open("xb") as file:
+                    editor.result.save(file, format="PNG")
+            except OSError as exc:
+                self._error(exc)
+                return
+            state["body_mask"] = path
+            self._invalidate_comparison()
+            edges = foreground_crop_diagnostics(editor.result)["edge_pixels"]
+            warning = " Todavía toca un borde. Revisa el recorte o calibra a mano." if any(edges.values()) else ""
+            self.status.set(f"Silueta revisada guardada para {VIEW_LABELS[view]}.{warning}")
+
+        if state.get("body_mask"):
+            try:
+                with Image.open(state["body_mask"]) as loaded:
+                    mask = loaded.convert("RGB")
+                if mask.size != image.size:
+                    raise ValueError("La máscara debe tener las dimensiones de la referencia.")
+            except (OSError, ValueError) as exc:
+                self._error(exc)
+                return
+            edit(mask)
+        else:
+            self._work("Separando primer plano con ISNet…", lambda: AnimeSilhouette().predict(image), edit)
 
     def _select_mask(self, key, label):
         if self.busy or self.view not in self.images:
@@ -755,7 +802,8 @@ class AnatomyDialog(tk.Toplevel):
                 self._invalidate_comparison()
             self._refresh_points(self._selected())
             self.status.set(f"{len(additions)} sugerencias en {VIEW_LABELS[view]}. Corrige con un clic.")
-        self._work("Detectando puntos con MediaPipe…", lambda: suggest_anatomical_points(image), apply_suggestions)
+        self._work("Detectando puntos con MediaPipe…",
+                   lambda: pose_points_for_view(suggest_anatomical_points(image), view), apply_suggestions)
 
     def _invalidate_comparison(self):
         self.comparisons.clear()
@@ -773,13 +821,15 @@ class AnatomyDialog(tk.Toplevel):
             segmenter = AnimeSilhouette() if use_isnet and any(not row[2] for row in sources.values()) else None
             for name, (image, source, mask_path) in sources.items():
                 try:
-                    found = suggest_anatomical_points(source)
+                    found = pose_points_for_view(suggest_anatomical_points(source), name)
                 except (OSError, ImportError, RuntimeError, ValueError):
                     found = {}
                 mask = None
                 if mask_path:
                     with Image.open(mask_path) as loaded:
                         mask = loaded.convert("RGB")
+                    if mask.size != image.size:
+                        raise ValueError(f"La silueta de {VIEW_LABELS[name]} debe coincidir con la referencia.")
                 elif segmenter is not None:
                     mask = segmenter.predict(image)
                 report = foreground_crop_diagnostics(mask) if mask is not None else None
@@ -788,6 +838,7 @@ class AnatomyDialog(tk.Toplevel):
         def apply(results):
             aligned = added = 0
             issues = []
+            pose_evidence = []
             edge_labels = {"top": "superior", "bottom": "inferior",
                            "left": "izquierdo", "right": "derecho"}
             for name, (calibration, found, report) in results.items():
@@ -814,6 +865,10 @@ class AnatomyDialog(tk.Toplevel):
                     if joint in found and vertex not in view["points"]:
                         view["points"][vertex] = (found[joint], True)
                         added += 1
+                pose_evidence.append((view.get("calibration", calibration), found))
+            disagreements = vertical_pose_disagreements(pose_evidence)
+            if disagreements:
+                issues.append(f"{len(disagreements)} puntos con alturas distintas entre vistas")
             if aligned or added:
                 self._invalidate_comparison()
             self._refresh_points(self._selected())
@@ -859,6 +914,7 @@ class AnatomyDialog(tk.Toplevel):
             "bundled_template": bundled,
             "allow_inferred_depth": may_infer,
             "export_rig": self.export_rig.get(),
+            "export_hybrid": self.export_hybrid.get(),
             "smoothing": .008 if bundled else 0,
             "proportions": {key: float(var.get().replace(",", ".")) for key, var in self.factors.items()},
         }
@@ -938,6 +994,7 @@ class AnatomyDialog(tk.Toplevel):
         self.side_manual = data.get("side_manual", "side_opposite" in data)
         self.infer_occlusion_depth.set(data.get("allow_inferred_depth") is True)
         self.export_rig.set(data.get("export_rig") is True)
+        self.export_hybrid.set(data.get("export_hybrid") is True)
         for key, var in self.factors.items():
             var.set(data.get("proportions", {}).get(key, 1))
         self._invalidate_comparison()

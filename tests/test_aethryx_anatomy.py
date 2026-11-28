@@ -17,6 +17,24 @@ from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
 
 
 class ReconstructionTests(unittest.TestCase):
+    def test_hybrid_export_keeps_editable_components_and_valid_rig(self):
+        from aethryx_bridge import inspect_avatar_glb
+
+        body = load_body_template(BUNDLED_BODY)
+        report = validate_deformation(body, body)
+        with tempfile.TemporaryDirectory() as folder:
+            path, _ = export_studio_reconstruction(
+                folder, {"export_hybrid": True}, body, trimesh.Scene(), report, {},
+            )
+            modular = trimesh.load(path.parent / "avatar-modular.glb", force="scene", process=False)
+            self.assertIn("cuerpo-base", modular.graph.nodes_geometry)
+            self.assertIn("ropa-camiseta", modular.graph.nodes_geometry)
+            rig = inspect_avatar_glb(path.parent / "avatar-articulado.glb")
+            self.assertTrue(rig["valid_native_glb"], rig["errors"])
+            self.assertEqual(rig["joints"], 53)
+            self.assertEqual(rig["visemes"], 15)
+            self.assertGreater(rig["skinned_nodes"], 1)
+
     def test_studio_wizard_opens_as_a_real_tk_dialog(self):
         from anatomy_dialog import AnatomyDialog
 

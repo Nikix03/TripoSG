@@ -1,5 +1,11 @@
 # AETHRYX Studio · Genesis Extended
 
+## Genesis Breakthrough · Referencias revisadas y primer avatar articulado
+
+- La separación asistida combina el recorte etiquetado de hojas existente con el nuevo contorno y el editor de máscaras de Genesis. Se revisaron los cuatro paneles locales mediante superposiciones de la máscara y ampliaciones de los pies. Los polígonos quitaron 910, 476, 1.417 y 2.234 píxeles en frontal, lateral, posterior y tres cuartos. Las imágenes, máscaras, contornos y GLB derivados permanecen en el directorio privado ignorado.
+- Se registraron por separado el ajuste de la plantilla y las piezas procedurales del prototipo articulado. El flujo permite seguir exportando los parches y volúmenes semánticos como archivos independientes. La prueba de integración exporta el avatar modular y comprueba su rig y visemas. Pasaron 103 pruebas.
+- Quedan pendientes la reconciliación de poses y correspondencias de las vistas laterales y posteriores, la incorporación de un componente generativo aceptado, la transferencia material al avatar articulado, la consolidación verificable con VRChat y las comparaciones visuales de calidad anatómica.
+
 ## Genesis Synthesis · Revisión de entrada y motores
 
 - Se contrastaron la hoja original, los recortes, las máscaras ISNet y See-through, los renders ortográficos y el GLB de 50 pasos. En los recortes originales, el borde inferior contiene 106, 64, 117 y 69 píxeles de primer plano en frontal, lateral, posterior y tres cuartos. Al ampliar 24 px a partir de la hoja y volver a segmentar, se obtuvieron 92, 46, 92 y 97 respectivamente. La ampliación vertical por sí sola no resolvió el contacto. La siguiente comparación requiere delimitar manualmente plantas y reflejos, y verificar silueta, pelo y puntos homólogos por vista antes de fusionar máscaras.

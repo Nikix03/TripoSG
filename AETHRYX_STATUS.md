@@ -1,5 +1,13 @@
 # Estado de AETHRYX Studio
 
+## 27 de noviembre de 2026 · Genesis Breakthrough
+
+- Partida limpia en `9b73da2`. Pasaron 103 pruebas con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
+- **Reparar silueta** abre ISNet o la máscara cargada en el editor. El contorno conserva las etiquetas interiores y permite cortar reflejos y fragmentos contiguos. Pincel, borrador y deshacer siguen disponibles. La máscara se guarda en un PNG nuevo y el ajuste de Genesis conserva su ruta. Las cuatro vistas privadas revisadas quedaron con cero píxeles en el borde inferior. Persisten contactos laterales, incluidos dedos y mechones donde el recorte original corta la figura.
+- Genesis descarta sugerencias faciales automáticas para la vista posterior y avisa cuando la altura proyectada de una articulación difiere más del 6 % de la altura calibrada entre vistas. El aviso requiere revisión humana y también puede reflejar calibración o predicción imprecisas.
+- **Avatar con cara, cabello y camiseta** exporta el cuerpo ajustado, un GLB modular que Studio abre para editar y otro articulado. La camiseta pasa un control de contactos en reposo. El ensayo privado usó una sola vista, 12 sugerencias MediaPipe de extremidades y torso, suavizado 0,055 y profundidad de plantilla. Los ojos, párpados, cabello y camiseta son procedurales. La auditoría del GLB confirmó 53 articulaciones, 12 nodos con skinning y 15 visemas. El ensayo de ajuste, exportación y comparación tardó 5,51 s en CPU. Falta validar el resultado con Unity y el SDK.
+- Con proyección ortográfica frontal a escala uniforme alineada por altura y centro, raster de 335 × 910 y la misma máscara original, TripoSG alcanzó 43,66 % y Genesis 60,47 %. Con la máscara revisada, 43,88 % y 60,89 %. El 43,30 % histórico corresponde a la medición anterior. La mejora comparable es de 16,81 puntos con la máscara original. El resultado mide silueta frontal e incorpora la vista usada para ajustar el cuerpo.
+
 ## 27 de noviembre de 2026 · Genesis Synthesis
 
 - `codex/development` avanzó por fast-forward de `8c1cb22` a `318fe53`. Pasaron las 99 pruebas iniciales y las 100 del bloque final con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.

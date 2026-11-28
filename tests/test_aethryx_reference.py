@@ -8,11 +8,32 @@ import trimesh
 
 from aethryx_reference import (
     SEMANTIC_COLORS, compare_silhouette, decode_semantic_scores, import_see_through_v2,
-    foreground_crop_diagnostics, reference_silhouette, silhouette_calibration,
+    foreground_crop_diagnostics, pose_points_for_view, reference_silhouette, retain_mask_polygon,
+    silhouette_calibration, vertical_pose_disagreements,
 )
 
 
 class ReferenceTests(unittest.TestCase):
+    def test_reviewed_polygon_preserves_labels_and_source(self):
+        mask = Image.new("RGB", (12, 12), "red")
+        mask.putpixel((5, 5), (0, 255, 0))
+        cleaned = retain_mask_polygon(mask, [(1, 1), (10, 1), (10, 9), (1, 9)])
+        self.assertEqual(cleaned.getpixel((5, 5)), (0, 255, 0))
+        self.assertEqual(cleaned.getpixel((0, 5)), (0, 0, 0))
+        self.assertEqual(cleaned.getpixel((5, 10)), (0, 0, 0))
+        self.assertEqual(mask.getpixel((5, 10)), (255, 0, 0))
+        with self.assertRaises(ValueError):
+            retain_mask_polygon(mask, [(2, 2), (3, 3), (4, 4)])
+
+    def test_rear_view_filters_face_and_pose_check_is_scale_normalized(self):
+        front = {0: (10, 10), 11: (20, 40), 15: (20, 70)}
+        rear = pose_points_for_view({0: (10, 10), 11: (20, 80), 15: (20, 112)}, "back")
+        self.assertNotIn(0, rear)
+        self.assertEqual(pose_points_for_view(front, "front"), front)
+        self.assertEqual(vertical_pose_disagreements([
+            (([50, 100], 0), front), (([80, 200], 0), rear), (None, {11: (0, 0)}),
+        ]), [15])
+
     def test_crop_diagnostics_report_edge_and_detached_foreground(self):
         mask = Image.new("L", (20, 20))
         draw = ImageDraw.Draw(mask)
