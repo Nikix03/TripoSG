@@ -20,7 +20,7 @@ from aethryx_rig import EXPORT_PROFILES, component_pose_contacts, export_rigged_
 from pose_dialog import PoseDialog
 from aethryx_modular import (
     BODY, BODY_PREVIEW_BANDS, EYES, FACE_CONTROLS, ModularAvatar, anime_body, apply_material, avatar_eye,
-    facial_vertices, fit_component_to_patch, fit_fingerless_gloves, fit_footwear, fit_garment_with_clearance,
+    clear_hair_penetrations, facial_vertices, fit_component_to_patch, fit_fingerless_gloves, fit_footwear, fit_garment_with_clearance,
     fit_hair, fit_sleeves, fit_trousers, fitted_eyelids, generated_hair_passes_review, head_frame, review_generated_hair,
     mouth_components, recolor_iris, regional_hair, write_new_glb,
 )
@@ -59,7 +59,7 @@ class ComponentDialog(tk.Toplevel):
              ("Peinado por capas…", self.layered_hair)),
             (("Preset Nikix v3", lambda: self.create_nikix(3)), ("Preset Nikix v4", lambda: self.create_nikix(4)),
              ("Preset Nikix v5", lambda: self.create_nikix(5)), ("Preset Nikix v6", lambda: self.create_nikix(6)),
-             ("Ajustar malla a pieza…", self.fit_generated)),
+             ("Ajustar malla a pieza…", self.fit_generated), ("Despejar mechón…", self.clear_hair_lock)),
             (("Mapas PBR…", self.pbr), ("Diagnóstico UV…", self.diagnose_uv), ("Ajustar UV…", self.edit_uv),
              ("Generar atlas UV", self.generate_uv)),
             (("Guardar conjunto…", self.save_outfit), ("Abrir conjunto…", self.load_outfit)),
@@ -165,6 +165,26 @@ class ComponentDialog(tk.Toplevel):
 
     def _piece_path(self):
         return filedialog.askopenfilename(parent=self, filetypes=[("Malla", "*.glb *.obj *.ply *.stl")])
+
+    def clear_hair_lock(self):
+        node = self._selected()
+        if not node or not node.startswith(("cabello-flequillo-", "cabello-largo-")):
+            self.status.set("Selecciona un mechón con UV longitudinales.")
+            return
+        clearance = simpledialog.askfloat("Holgura capilar", "Fracción de la altura corporal.",
+                                          initialvalue=.002, minvalue=.0001, maxvalue=.01, parent=self)
+        if clearance is None:
+            return
+
+        def adjust():
+            piece, review = clear_hair_penetrations(self._body(), self.avatar.get(node, world=True),
+                                                    clearance=clearance)
+            if review["changed"]:
+                matrix, _ = self.avatar.scene.graph[node]
+                piece.apply_transform(np.linalg.inv(matrix))
+                self.avatar.replace(node, piece)
+            return f"Mechón · {review['before']['inside']} → {review['after']['inside']} vértices interiores."
+        self._edit_background(adjust, node)
 
     def fit_generated(self):
         target = self._selected()
@@ -411,7 +431,8 @@ class ComponentDialog(tk.Toplevel):
             self._edit(lambda: self._new_fitted("cabello", fit_hair(self._body(), *values)), "cabello")
 
     def clothing(self):
-        style = simpledialog.askstring("Estilo de prenda", "Elige top, falda, vestido, mangas, pantalón o guantes.",
+        style = simpledialog.askstring("Estilo de prenda",
+                                       "Elige top, falda, vestido, mangas, pantalón, guantes o guantes con dedos.",
                                        initialvalue="top", parent=self)
         if style is None:
             return
@@ -427,12 +448,17 @@ class ComponentDialog(tk.Toplevel):
                 self._edit_background(generate_trousers, "prenda-pantalon")
             return
         generators = {"mangas": (fit_sleeves, "prenda-manga-izquierda"),
-                      "guantes": (fit_fingerless_gloves, "prenda-guante-izquierdo")}
+                      "guantes": (fit_fingerless_gloves, "prenda-guante-izquierdo"),
+                      "guantes con dedos": (lambda body: fit_fingerless_gloves(body, full_fingers=True),
+                                            "prenda-guante-dedos-izquierdo")}
         if style in generators:
             fit, name = generators[style]
 
             def generate_pieces():
-                self._group(fit(self._body()))
+                pieces = fit(self._body())
+                self._group(pieces, pieces.keys() if style == "guantes con dedos" else ())
+                if style == "guantes con dedos":
+                    return "Guantes con dedos preparados como borrador oculto. Comprueba la flexión antes de aplicarlos."
                 return "Prenda validada en reposo. Usa Comprobar en poses para revisar la deformación."
 
             self._edit_background(generate_pieces, name)

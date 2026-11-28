@@ -157,7 +157,7 @@ def _iris(color, *, refined=False):
     return Image.fromarray(texture)
 
 
-def avatar_eye(body, left, color, size=1, spacing=1):
+def avatar_eye(body, left, color, size=1, spacing=1, *, refined=False):
     if not .75 <= size <= 1.25 or not .75 <= spacing <= 1.25:
         raise ValueError("Tamaño y separación de ojos deben quedar entre 0,75 y 1,25.")
     low, high = head_frame(body)
@@ -174,7 +174,10 @@ def avatar_eye(body, left, color, size=1, spacing=1):
     mesh = trimesh.creation.icosphere(subdivisions=3)
     mesh.vertices *= np.array([width * .117, height * .078, depth * .104]) * size
     mesh.apply_translation([center_x, center_y, forward - depth * .077])
-    return apply_material(mesh, "#ffffff", projection="cylindrical", roughness=.23, image=_iris(color))
+    if refined:
+        mesh.metadata["aethryx_iris"] = 3
+    return apply_material(mesh, "#ffffff", projection="cylindrical", roughness=.23,
+                          image=_iris(color, refined=refined))
 
 
 def recolor_iris(mesh, color, roughness=.23):
@@ -359,6 +362,53 @@ def body_contacts(body, component):
             from vtkmodules.util.numpy_support import vtk_to_numpy
             inside = int(np.count_nonzero(vtk_to_numpy(mask)))
     return {"contacts": collision.GetNumberOfContacts(), "inside": inside}
+
+
+def clear_hair_penetrations(body, piece, *, clearance=.002, maximum_shift=.035):
+    """Displace a closed lock locally on a copy while fixing the textured root."""
+    from pyvista import PolyData
+    from scipy.sparse import coo_matrix
+    from vtkmodules.vtkFiltersCore import vtkImplicitPolyDataDistance
+
+    if not body.is_volume or not 0 < clearance <= .01 or not clearance < maximum_shift <= .06:
+        raise ValueError("Se requiere un cuerpo cerrado y una holgura y desplazamiento válidos.")
+    before = body_contacts(body, piece)
+    uv = getattr(piece.visual, "uv", None)
+    if not any(before.values()) or uv is None or not piece.is_volume:
+        return piece.copy(), {"before": before, "after": before, "root_contacts": 0, "changed": False}
+    surface = PolyData(body.vertices, np.column_stack((np.full(len(body.faces), 3), body.faces)))
+    locator = vtkImplicitPolyDataDistance()
+    locator.SetInput(surface)
+    vertices = np.asarray(piece.vertices).copy()
+    height = body.extents[1]
+    strength = np.clip((.999 - uv[:, 1]) / .10, 0., 1.)
+    root_contacts = sum(locator.EvaluateFunction(point) < 0 for point in vertices[strength == 0])
+    edges = piece.edges_unique
+    adjacency = coo_matrix((np.ones(len(edges)), edges.T), shape=(len(vertices), len(vertices))).tocsr()
+    adjacency = adjacency + adjacency.T
+    degree = np.maximum(np.asarray(adjacency.sum(axis=1)), 1)
+    candidate = piece.copy()
+    best, after = piece.copy(), before
+    for _ in range(6):
+        moves = np.zeros_like(vertices)
+        for index, point in enumerate(candidate.vertices):
+            closest = [0., 0., 0.]
+            signed = locator.EvaluateFunctionAndGetClosestPoint(point, closest)
+            target = height * clearance
+            if signed < target and abs(signed) > 1e-9:
+                moves[index] = (point - np.asarray(closest)) * ((target - signed) / signed)
+        offset = (candidate.vertices - vertices) + (moves + .22 * (adjacency @ moves) / degree) * strength[:, None]
+        length = np.linalg.norm(offset, axis=1)
+        offset *= np.minimum(1, height * maximum_shift / np.maximum(length, 1e-12))[:, None]
+        candidate.vertices = vertices + offset
+        current = body_contacts(body, candidate)
+        if (candidate.is_volume and all(current[key] <= after[key] for key in current)
+                and current != after
+                and min(hair_silhouette_overlap(piece, candidate, size=128).values()) >= .78):
+            best, after = candidate.copy(), current
+    residual = sum(locator.EvaluateFunction(point) < 0 for point in best.vertices[strength > 0])
+    return best, {"before": before, "after": after, "root_contacts": int(root_contacts),
+                  "movable_inside": int(residual), "changed": after != before}
 
 
 def fit_component_to_patch(body, patch, generated):
@@ -715,8 +765,8 @@ def fit_trousers(body, color="#343957", *, waist=.56, cuff=.09, clearance=.002):
     return {"prenda-pantalon": apply_material(trousers, color, projection="cylindrical", roughness=.83)}
 
 
-def fit_fingerless_gloves(body, color="#49445d"):
-    """Build two fitted wrist and palm shells with the fingers exposed."""
+def fit_fingerless_gloves(body, color="#49445d", *, full_fingers=False):
+    """Build two fitted shells over the wrist and palm, optionally covering the fingers."""
     from aethryx_rig import humanoid_skeleton
 
     if not body.is_volume:
@@ -730,12 +780,18 @@ def fit_fingerless_gloves(body, color="#49445d"):
         forearm = wrist - elbow
         delta = centers - wrist
         along = delta @ forearm / (forearm @ forearm)
-        selected = (along > -.13) & (along < .27) & (sign * delta[:, 0] > -.045 * height)
-        glove = _shell(body, selected, .002 * height, .0011 * height)
+        selected = (along > -.13) & (sign * delta[:, 0] > -.045 * height)
+        if full_fingers:
+            clearance, thickness = .0006, .00015
+        else:
+            selected &= along < .27
+            clearance, thickness = .002, .0011
+        glove = _shell(body, selected, clearance * height, thickness * height)
         report = body_contacts(body, glove)
         if any(report.values()) or not glove.is_volume:
             raise ValueError(f"Guante {label} rechazado. Contactos {report['contacts']}, vértices interiores {report['inside']}.")
-        pieces[f"prenda-guante-{label}"] = apply_material(glove, color, projection="cylindrical", roughness=.8)
+        name = "prenda-guante-dedos" if full_fingers else "prenda-guante"
+        pieces[f"{name}-{label}"] = apply_material(glove, color, projection="cylindrical", roughness=.8)
     return pieces
 
 

@@ -14,6 +14,7 @@ from aethryx_modular import BODY, EYES, ModularAvatar, head_frame
 EXPORT_PROFILES = {
     "Studio Original": (1., False), "VRChat PC Quality": (.8, False),
     "VRChat PC Optimized": (.47, True), "VRChat Mobile": (.30, True),
+    "VRChat PC Hair Batch": (.47, True),
 }
 
 
@@ -79,7 +80,8 @@ def profile_parts(parts, profile):
     bangs = {}
     for name, mesh in working.items():
         material = getattr(mesh.visual, "material", None)
-        if merge and name.startswith("cabello-flequillo-") and material is not None:
+        prefixes = ("cabello-flequillo-", "cabello-largo-") if profile == "VRChat PC Hair Batch" else ("cabello-flequillo-",)
+        if merge and name.startswith(prefixes) and material is not None:
             bangs.setdefault(hash(material), []).append(name)
     for candidates in bangs.values():
         if len(candidates) < 2:
@@ -92,6 +94,25 @@ def profile_parts(parts, profile):
         geometry.visual = TextureVisuals(uv=np.vstack([m.visual.uv for m in meshes]),
                                          material=meshes[0].visual.material.copy())
         working[candidates[0]] = geometry
+    if profile == "VRChat PC Hair Batch":
+        for eye in EYES:
+            upper_name, lower_name = (f"{eye}-parpado-{suffix}" for suffix in ("superior", "inferior"))
+            if upper_name not in working or lower_name not in working:
+                continue
+            upper, lower = working[upper_name], working[lower_name]
+            upper_mat = getattr(upper.visual, "material", None)
+            lower_mat = getattr(lower.visual, "material", None)
+            if (upper_mat is None or lower_mat is None or hash(upper_mat) != hash(lower_mat)
+                    or getattr(upper.visual, "uv", None) is None or getattr(lower.visual, "uv", None) is None):
+                continue
+            combined = trimesh.util.concatenate([
+                trimesh.Trimesh(vertices=part.vertices, faces=part.faces, process=False) for part in (upper, lower)
+            ])
+            combined.visual = TextureVisuals(uv=np.vstack((upper.visual.uv, lower.visual.uv)),
+                                             material=upper_mat.copy())
+            combined.metadata["aethryx_lid_split"] = len(upper.vertices)
+            del working[upper_name], working[lower_name]
+            working[f"{eye}-parpado-par"] = combined
     if profile == "VRChat Mobile":
         _limit_mobile_textures(working)
     return working
@@ -372,18 +393,20 @@ def facial_morphs(mesh):
 
 def _eyelid_morphs(name, parts):
     for eye, side in zip(EYES, ("Left", "Right")):
-        if not name.startswith(f"{eye}-parpado-") or eye not in parts:
+        lash = name == f"{eye}-pestana" and parts[name].metadata.get("aethryx_fitted_lash") is True
+        if (not name.startswith(f"{eye}-parpado-") and not lash) or eye not in parts:
             continue
         eyelid, globe = parts[name], parts[eye]
-        upper = name.endswith("-superior")
+        upper = lash or name.endswith("-superior")
         radii = globe.extents / 2
         if np.any(radii <= 0):
             return {}
         x, y, _ = ((eyelid.vertices - globe.bounds.mean(axis=0)) / radii).T
         arc = np.sqrt(np.maximum(0, 1 - x * x))
         tilt = .09 * x
-        sign = 1 if upper else -1
-        opening = .49 if upper else .53
+        split = eyelid.metadata.get("aethryx_lid_split")
+        sign = np.where(np.arange(len(x)) < split, 1, -1) if split is not None else (1 if upper else -1)
+        opening = np.where(np.asarray(sign) > 0, .49, .53)
         latitude = sign * (y - tilt) / np.maximum(arc, .05)
         influence = np.clip((.96 - latitude) / (.96 - opening), 0, 1)
         target = y + influence * (-.06 + sign * (.075 - opening)) * arc
@@ -600,7 +623,12 @@ def component_pose_contacts(scene, node):
     if node == BODY or node not in solver.parts:
         raise ValueError("Selecciona una pieza distinta del cuerpo base.")
     result = {}
-    for name, pose in (("reposo", {}), ("demostración", demo_rotations()), ("brazos elevados", solver.t_pose())):
+    poses = {"reposo": {}, "demostración": demo_rotations(), "brazos elevados": solver.t_pose()}
+    if node.startswith("prenda-guante-dedos-"):
+        hand = "Left" if node.endswith("-izquierdo") else "Right"
+        poses["flexión de dedos"] = {hand + finger + "Proximal": (20, 0, 0)
+                                     for finger in ("Index", "Middle", "Ring", "Little")}
+    for name, pose in poses.items():
         vertices, _ = solver.evaluate(pose)
         body, component = (solver.parts[key].copy() for key in (BODY, node))
         body.vertices, component.vertices = vertices[BODY], vertices[node]

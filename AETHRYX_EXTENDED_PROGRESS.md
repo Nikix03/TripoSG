@@ -1,5 +1,13 @@
 # AETHRYX Studio · Genesis Extended
 
+## Genesis Perfection · Holgura capilar y avatar de revisión
+
+- El solver evalúa distancia firmada a la superficie corporal, corrige el mechón por vértice y suaviza el desplazamiento entre vecinos. La zona de raíz con UV V ≥ 0,999 permanece fija. La holgura de ensayo fue 0,002 de la altura, con desplazamiento máximo de 0,035. Se exige volumen y al menos 78 % de retención de silueta en cada una de tres proyecciones antes de conservar una corrección. El reporte separa los vértices interiores fijos de los móviles.
+- Las mediciones Harmony → Perfection se calcularon con las mismas poses y el mismo detector. En demostración se midieron 2.851 → 1.942 contactos y 1.182 → 622 vértices interiores. Con brazos elevados se midieron 2.662 → 1.550 contactos y 1.069 → 505 vértices interiores. Quedan penetraciones. La variante Perfection sigue siendo un avatar de revisión.
+- El archivo de validación identifica la procedencia de cada componente modular. El cuerpo conserva la plantilla deformada con anclas de tres imágenes. El cabello sigue siendo geométrico procedural con contorno de la máscara frontal y color de tres perspectivas. Los ojos, pestañas, cejas, párpados, camiseta y textura normal son procedurales. Los candidatos de TripoSG y TripoSR permanecen separados.
+- **VRChat PC Hair Batch** conserva el original modular. En una copia, agrupa mechones compatibles con el mismo atlas y fusiona ambos párpados por ojo con sus desplazamientos de parpadeo. Se verificaron los 8 slots directamente en las primitivas del GLB de Harmony y se compararon numéricamente los deltas de los párpados antes y después. Estas verificaciones no ejecutan las categorías de rendimiento y dinámica del SDK.
+- El nuevo proyecto `.aeth`, el GLB modular, el GLB articulado, la copia PC de Harmony, el ensayo de guantes y la comparación visual permanecen en el directorio privado.
+
 ## Genesis Harmony · Selección por calidad y exportación privada
 
 - **Cola → Priorizar** compara salidas con el mismo nombre de componente. La carpeta de revisión puede contener `front.png`, `side.png` y `back.png` con alfa. La puntuación combina 70 % de IoU promedio y 30 % del peor ángulo. Se priorizan mallas cerradas. Con una guía anatómica activa se exige ausencia de contactos y un centroide dentro del 5 % de la altura corporal respecto a la guía. La confianza indica cobertura de evidencia, sin interpretación probabilística.

@@ -23,6 +23,17 @@ def color_gradient(top, bottom, resolution=512):
     return Image.fromarray(np.repeat(np.rint(blend * first + (1 - blend) * last), 4, axis=1).astype(np.uint8))
 
 
+def woven_normal_map():
+    """A tiled tangent-space normal map for the warp and weft of fitted cloth."""
+    grid = np.linspace(0, 2 * np.pi * 48, 512, endpoint=False)
+    x, y = np.meshgrid(grid, grid)
+    dx = .18 * np.cos(x) * (.7 + .3 * np.cos(y))
+    dy = .18 * np.cos(y) * (.7 - .3 * np.cos(x))
+    normal = np.stack((-dx, dy, np.ones_like(dx)), axis=-1)
+    normal /= np.linalg.norm(normal, axis=-1, keepdims=True)
+    return Image.fromarray(np.rint((normal * .5 + .5) * 255).astype(np.uint8))
+
+
 def update_pbr_maps(mesh, layers, resolution=1024, alpha_mode="OPAQUE", cutoff=.5):
     """Replace supplied channels while preserving unrelated channels and mesh UVs."""
     if resolution not in RESOLUTIONS or alpha_mode not in ("OPAQUE", "MASK", "BLEND") or not 0 <= cutoff <= 1:

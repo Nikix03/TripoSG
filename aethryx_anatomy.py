@@ -401,8 +401,11 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
         modular = None
         components = [{"name": "cuerpo-base", "role": "body", "file": body.name}]
         if data.get("export_hybrid") is True:
+            from aethryx_anime import fitted_eye_details
+            from aethryx_materials import update_pbr_maps, woven_normal_map
             from aethryx_modular import (
-                EYES, apply_material, avatar_eye, body_contacts, fit_garment_with_clearance, fitted_eyelids, regional_hair,
+                EYES, apply_material, avatar_eye, body_contacts, clear_hair_penetrations,
+                fit_garment_with_clearance, fitted_eyelids, regional_hair,
             )
 
             colors = report.get("reference_evidence", {}).get("visible_regional_colors", {})
@@ -423,18 +426,29 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
                         ):
                             hair[name], contacts, retained = baseline[name], original_contacts, False
                     hair_review[name] = {**contacts, "guided_shape_retained": retained}
+                    if name.startswith(("cabello-largo-", "cabello-flequillo-")):
+                        hair[name], repair = clear_hair_penetrations(mesh, hair[name])
+                        hair_review[name]["clearance_repair"] = repair
             else:
                 hair = regional_hair(mesh, **hair_options)
             pieces = {"cuerpo-base": mesh, **hair}
             for eye_name, left, color in zip(EYES, (True, False), ("#6589d4", "#ae6798")):
-                eye = avatar_eye(mesh, left, color)
+                eye = avatar_eye(mesh, left, color, refined=True)
                 pieces[eye_name] = eye
                 for lid, part in fitted_eyelids(eye).items():
                     pieces[f"{eye_name}-parpado-{lid}"] = part
+                for detail, part in fitted_eye_details(eye, left=left).items():
+                    pieces[f"{eye_name}-{detail}"] = part
             shirt, clearance = fit_garment_with_clearance(mesh, .016, .006, "top")
             if "clothing" in colors:
                 shirt = apply_material(shirt, colors["clothing"], projection="cylindrical", roughness=.8)
+            update_pbr_maps(shirt, {"normal": woven_normal_map()}, resolution=512)
             pieces["prenda-camiseta"] = shirt
+            provenance = {
+                name: ("deformed_template" if name == "cuerpo-base" else
+                       "procedural_reference_guided" if outline and name.startswith("cabello-") else "procedural")
+                for name in pieces
+            }
             hybrid = trimesh.Scene(pieces)
             hybrid.export(output / "avatar-modular.glb", file_type="glb")
             components.append({"name": "avatar-modular", "role": "modular-avatar", "file": "avatar-modular.glb"})
@@ -444,6 +458,7 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
                 "transferred_base_colors": colors,
                 "hair_guidance": "frontal_semantic_outline" if outline else "procedural_body_frame",
                 "hair_rest_review": hair_review,
+                "component_provenance": provenance,
             }}
         else:
             hybrid = None

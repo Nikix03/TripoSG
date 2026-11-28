@@ -9,17 +9,46 @@ import trimesh
 from aethryx_anime import layered_hair, nikix_preset, sculpted_body
 from aethryx_anatomy import load_body_template, semantic_visual_hull
 from aethryx_materials import unwrap_uv, uv_quality
-from aethryx_modular import (BODY, _repair_hair_seams, body_contacts, fit_component_to_patch,
+from aethryx_modular import (BODY, EYES, _repair_hair_seams, avatar_eye, body_contacts, clear_hair_penetrations, fit_component_to_patch,
                            fit_fingerless_gloves, fit_trousers,
-                           generated_hair_passes_review, refine_component_fit,
+                           fitted_eyelids, generated_hair_passes_review, refine_component_fit,
                            remove_nonmanifold_flaps, review_generated_hair)
-from aethryx_rig import PosePreview, component_pose_contacts, demo_rotations, profile_parts
+from aethryx_rig import PosePreview, _eyelid_morphs, component_pose_contacts, demo_rotations, profile_parts
 from aethryx_profiles import BUNDLED_BODY
 from studio_project import generation_recovery_path, load_project, save_project
 from aethryx_tools import execute_tool
 
 
 class NikixEvolutionTests(unittest.TestCase):
+    def test_hair_clearance_removes_a_shallow_intersection_and_preserves_root_uv(self):
+        body = trimesh.creation.icosphere(subdivisions=2)
+        lock = trimesh.creation.icosphere(subdivisions=2, radius=.22)
+        lock.apply_translation([1.20, 0, 0])
+        original = lock.vertices.copy()
+        uv = np.column_stack((np.zeros(len(original)), (original[:, 1] + .22) / .44))
+        lock.visual = trimesh.visual.TextureVisuals(uv=uv)
+        repaired, report = clear_hair_penetrations(body, lock)
+        self.assertGreater(report["before"]["inside"], 0)
+        self.assertEqual(report["after"], {"contacts": 0, "inside": 0})
+        fixed = uv[:, 1] >= .999
+        np.testing.assert_array_equal(repaired.vertices[fixed], original[fixed])
+        np.testing.assert_array_equal(repaired.visual.uv, uv)
+        np.testing.assert_array_equal(lock.vertices, original)
+        self.assertTrue(repaired.is_volume)
+
+    def test_hair_batch_preserves_both_eyelid_morphs_when_merging(self):
+        body = load_body_template(BUNDLED_BODY)
+        eye = avatar_eye(body, True, "#6677dd")
+        name = EYES[0]
+        parts = {name: eye, **{f"{name}-parpado-{suffix}": mesh
+                               for suffix, mesh in fitted_eyelids(eye).items()}}
+        original = np.vstack([_eyelid_morphs(f"{name}-parpado-{suffix}", parts)["BlinkLeft"]
+                              for suffix in ("superior", "inferior")])
+        batched = profile_parts(parts, "VRChat PC Hair Batch")
+        self.assertEqual(len(batched), len(parts) - 1)
+        np.testing.assert_array_equal(_eyelid_morphs(f"{name}-parpado-par", batched)["BlinkLeft"], original)
+        self.assertIn(f"{name}-parpado-superior", parts)
+
     def test_trousers_and_fingerless_gloves_fit_v6_in_three_poses(self):
         body = sculpted_body("Anime femenino", refined=True, facial_loops=True)
         pieces = {**fit_trousers(body), **fit_fingerless_gloves(body)}

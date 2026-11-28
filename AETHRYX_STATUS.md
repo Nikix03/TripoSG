@@ -1,5 +1,15 @@
 # Estado de AETHRYX Studio
 
+## 28 de noviembre de 2026 · Genesis Perfection
+
+- Pasaron 117 pruebas con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
+- **Despejar mechón** corrige penetraciones sobre una copia con holgura configurable. Fija las raíces identificadas por UV longitudinal, limita el desplazamiento y conserva UV, volumen y silueta dentro del umbral. Genesis aplica el mismo control al exportar los mechones guiados y registra el contacto residual.
+- Comparación Harmony → Perfection sobre el mismo cuerpo y protocolo. En reposo, las piezas capilares con contacto bajaron de 14 a 9, los contactos de 2.701 a 1.363 y los vértices interiores de 1.116 a 406. En demostración, las piezas con contacto bajaron de 14 a 11, y con brazos elevados de 14 a 9. Los contactos de raíz se registran aparte cuando la pieza usa UV longitudinales. Una penetración en la raíz sigue requiriendo revisión.
+- El avatar Perfection añade cejas y pestañas geométricas ajustadas a cada ojo, iris refinados y un normal map procedural de tejido en la camiseta. Las pestañas nuevas acompañan el parpadeo. La comparación guardada usa cámaras y luz idénticas para Harmony y Perfection y muestra la hoja artística original. El proyecto privado `.aeth` se guardó y se volvió a leer con sus referencias y ajuste editables. El GLB articulado pasó la auditoría local con 53 articulaciones, 23 morphs corporales, 15 visemas y 33 nodos con skinning.
+- La copia optimizada de Harmony alcanzó 54.220 triángulos, 8 nodos con skinning y 8 slots, con 6 materiales únicos. Conservó los 53 huesos, los 23 morphs corporales y los 15 visemas. La fusión de párpados conservó los desplazamientos del parpadeo. El preparado dinámico de mechones requiere la versión modular. La clasificación Medium sigue pendiente del SDK.
+- Los guantes con dedos pasaron reposo, demostración y brazos elevados en V6. En la flexión de 20° aparecieron 1.254 contactos por guante, por lo que Studio los prepara ocultos para revisión.
+- Siguen pendientes la reconciliación esquelética completa, la topología facial y el modelado anatómico de manos y pies, la aceptación de un candidato generativo y la comprobación de PhysBones, menús y materiales en Unity. Se conservó el bloqueo de licencia registrado en Harmony, sin un nuevo arranque batch.
+
 ## 28 de noviembre de 2026 · Genesis Harmony
 
 - Pasaron las 115 pruebas con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.

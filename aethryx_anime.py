@@ -149,6 +149,26 @@ def _sweep(points, radii, sides=10, *, closed=False):
     return mesh
 
 
+def fitted_eye_details(eye, *, left):
+    """Fit independent tapered facial geometry to the eye and its upper rim."""
+    center = eye.bounds.mean(axis=0)
+    radii = eye.extents / 2
+    u = np.linspace(-.91, .91, 33)
+    arc = np.sqrt(1 - u * u)
+    v = .49 * arc + .09 * u
+    z = np.sqrt(np.maximum(0, 1 - u * u - v * v)) + .08
+    rim = center + np.column_stack((u, v, z)) * radii
+    brow = center + np.column_stack((u, 1.55 + .27 * arc + .12 * u * (1 if left else -1),
+                                     z - .34)) * radii
+    lash = _sweep(rim, radii[1] * (.04 + .075 * arc))
+    lash.metadata["aethryx_fitted_lash"] = True
+    return {
+        "pestana": apply_material(lash, "#241b34", projection="planar"),
+        "ceja": apply_material(_sweep(brow, radii[1] * (.045 + .14 * arc)),
+                               "#3c263b", projection="planar"),
+    }
+
+
 def sculpted_face_parts(body, colors=("#6589d4", "#ae6798")):
     guide = body.metadata.get("aethryx_eye_guide")
     if not guide or len(guide) != 4:
