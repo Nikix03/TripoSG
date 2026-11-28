@@ -2,9 +2,19 @@
 
 ## Pendiente de referencias autorizadas
 
-- No están disponibles las vistas originales frontal, lateral y posterior de Nikix ni el GLB fuente de Mannequiny. Solo existe el render comparativo histórico de Mannequiny, que no permite repetir su IoU desde la geometría fuente.
-- La referencia detallada local es una ilustración en pose dinámica, oscura y parcial; la hoja de Phase 3 es sintética y demasiado básica. No se usaron para afirmar calidad anatómica profesional ni se inició otra inferencia TripoSG con ellas.
-- Para continuar la validación de reconstrucción hacen falta las tres referencias autorizadas y alineadas del mismo personaje; para reproducir Mannequiny hace falta su modelo fuente con licencia registrada.
+- La hoja artística original de Nikix está disponible localmente y contiene cuatro perspectivas, pero no son imágenes independientes calibradas: la lateral y la de tres cuartos tienen poses distintas y algunos paneles se tocan. Las separaciones actuales son recortes manuales, no detección automática de vistas.
+- Falta el GLB fuente de Mannequiny. El render comparativo histórico no permite repetir su IoU desde la geometría fuente.
+- La inferencia local de TripoSG desde una sola vista terminó. No es reconstrucción multivista ni un avatar terminado; faltan correspondencias de pose y validación anatómica.
+
+## Genesis Continuation · Referencia Nikix local
+
+- Se verificó intacta `assets/nikix-reference.webp.webp`; el SHA-256 coincide con el valor registrado al descubrirla y `.gitignore` la excluye mediante `nikix*.webp`. Las cuatro vistas, máscaras, paletas y mallas de prueba permanecen en `user_images/nikix-analysis/`, también ignorado; no se publican la referencia ni sus derivados.
+- Se separaron manualmente vistas frontal, lateral, posterior y tres cuartos. ISNet produjo máscaras binarias independientes. Los anchos/altos de sus envolventes son aproximaciones (0,367, 0,236, 0,294 y 0,298); las máscaras tocan los bordes de los recortes y no constituyen proporciones anatómicas calibradas.
+- See-through V2 se cargó desde el checkpoint oficial Apache-2.0 de 1.294.766.917 bytes, descargado localmente y excluido por `.gitignore`; no se instalaron dependencias. En la RTX 5070, cuatro inferencias CUDA tardaron 0,206–0,209 s por vista. PyTorch midió picos de 2.360,5 MiB asignados y 2.660 MiB reservados. `nvidia-smi` observó 1.528 MiB antes y 4.297 MiB después; esos son muestreos, no un pico global de alta frecuencia.
+- Se extrajeron localmente colores aproximados de cabello y rostro. La paleta detecta tonos rubios, rosados y cian, pero la máscara de See-through confunde piel con `legwear` y no ofrece una clase corporal completa (la clase nativa `neck` solo cubre el cuello). Accesorios y color de ojos no son suficientemente fiables; no se usan como verdad ni para transferir material.
+- TripoSG generó desde el recorte frontal con máscara ISNet, 50 pasos, semilla 42, malla original sin decimación y `--adaptive-profile`. El perfil RTX 5070 seleccionó FP16/12 GiB; no activó CPU offload ni carga secuencial y no hubo OOM. Tiempo total: 327,98 s; la denoising loop duró 15 s. `nvidia-smi` muestreado cada 2 s alcanzó 7.948 MiB de 12.227 MiB; PyTorch reportó 5.341,3 MiB de pico asignado, 3.798,4 MiB asignados al final y 4.950 MiB reservados al final.
+- El GLB local mide 11.885.888 bytes: 330.100 vértices, 660.322 caras, 160 componentes y superficie no estanca; el componente mayor contiene 651.128 caras. La IoU de silueta frontal, tras ajustar escala y centro por envolvente, fue 43,30 %. Las vistas renderizadas quedan completas y verticales, pero muestran cabello fragmentado, rostro sin detalle ocular, tacones inexistentes en la referencia y discrepancias anatómicas. No se reduce ni se acepta esta malla como avatar.
+- El procesamiento solo clasifica píxeles visibles y no corrige poses ni reconstruye anatomía ocluida. No se publicaron imágenes ni derivados de la hoja de Nikix.
 
 ## Genesis Continuation · Diagnóstico local de escena
 
