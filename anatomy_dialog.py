@@ -20,10 +20,10 @@ from aethryx_anatomy import (
 from aethryx_engines import suggest_anatomical_points
 from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
 from aethryx_reference import (
-    AnimeSilhouette, SEE_THROUGH_COLORS, SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, profile_opposite,
+    AnimeSilhouette, analyze_view_alignment, SEE_THROUGH_COLORS, SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, profile_opposite,
     foreground_crop_diagnostics, named_reference_views, reference_silhouette, refine_visible_mask,
     pose_points_for_view, segment_anime_reference, vertical_pose_disagreements,
-    segment_see_through_v2, semantic_reference_regions, silhouette_calibration,
+    segment_see_through_v2, semantic_reference_regions,
 )
 from proportion_dialog import ProportionDialog
 from mask_dialog import MaskDialog
@@ -53,6 +53,7 @@ class AnatomyDialog(tk.Toplevel):
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.result = None
+        self.guided_image = False
         self.draft = None
         self.triposg_crop = None
         self.reference_regions = deepcopy(reference_regions)
@@ -260,6 +261,21 @@ class AnatomyDialog(tk.Toplevel):
                 self.factors[key].set(value)
             self._invalidate_comparison()
             self._redraw()
+
+    def begin_from_image(self, path):
+        try:
+            with Image.open(path) as image:
+                self.images["front"] = image.convert("RGBA")
+        except OSError as exc:
+            self._error(exc)
+            return
+        self.guided_image = True
+        self.views["front"] = {"image": path, "points": {}}
+        self.infer_occlusion_depth.set(True)
+        self.export_hybrid.set(True)
+        self.export_rig.set(True)
+        self._change_view()
+        self.after_idle(lambda: self._auto_align(use_isnet=True))
 
     def _load_image(self):
         if self.busy:
@@ -648,6 +664,7 @@ class AnatomyDialog(tk.Toplevel):
     def _refresh_points(self, selected=None):
         points = self.views[self.view]["points"]
         self.points.delete(0, "end")
+        labels = {joint: label for label, joint in POSE_LABELS.items()}
         for index, vertex in enumerate(self.indices):
             point = points.get(vertex)
             if point is None:
@@ -656,7 +673,8 @@ class AnatomyDialog(tk.Toplevel):
                 status = "oculto"
             else:
                 status = "sugerido" if point[1] else "marcado"
-            self.points.insert("end", f"{index + 1:02d}  Vértice {vertex} · {status}")
+            label = labels.get(self.pose_links.get(vertex)) if self.guided_image else None
+            self.points.insert("end", f"{index + 1:02d}  {label or f'Vértice {vertex}'} · {status}")
         if selected is not None and 0 <= selected < len(self.indices):
             self.points.selection_set(selected)
             self.points.see(selected)
@@ -673,7 +691,10 @@ class AnatomyDialog(tk.Toplevel):
         if selected is not None and not self.busy:
             self.views[self.view]["points"][self.indices[selected]] = (None, False)
             self._invalidate_comparison()
-            self._refresh_points(selected)
+            if self.guided_image:
+                self._guide_next_point()
+            else:
+                self._refresh_points(selected)
 
     def _remove_point(self):
         selected = self._selected()
@@ -725,7 +746,18 @@ class AnatomyDialog(tk.Toplevel):
         elif self._selected() is not None:
             self.views[self.view]["points"][self.indices[self._selected()]] = (point, False)
             self._invalidate_comparison()
+            if self.guided_image:
+                self._guide_next_point()
+                return
         self._refresh_points(self._selected())
+
+    def _guide_next_point(self):
+        points = self.views[self.view]["points"]
+        pending = next((index for index, vertex in enumerate(self.indices)
+                        if vertex not in points and vertex in self.pose_links), None)
+        self._refresh_points(pending)
+        if pending is not None:
+            self.status.set(f"Marca en la imagen: {self.pose_label.get()}. Puedes saltar un punto oculto.")
 
     def _template_click(self, event):
         if self.template_pixels is None or self.busy:
@@ -857,24 +889,16 @@ class AnatomyDialog(tk.Toplevel):
             for name, image in self.images.items()
         }
         def detect():
-            results = {}
-            segmenter = AnimeSilhouette() if use_isnet and any(not row[2] for row in sources.values()) else None
-            for name, (image, source, mask_path) in sources.items():
+            segmenter = None
+            if use_isnet and any(not mask and image.getchannel("A").getextrema()[0] >= 32
+                                 for image, _, mask in sources.values()):
                 try:
-                    found = pose_points_for_view(suggest_anatomical_points(source), name)
-                except (OSError, ImportError, RuntimeError, ValueError):
-                    found = {}
-                mask = None
-                if mask_path:
-                    with Image.open(mask_path) as loaded:
-                        mask = loaded.convert("RGB")
-                    if mask.size != image.size:
-                        raise ValueError(f"La silueta de {VIEW_LABELS[name]} debe coincidir con la referencia.")
-                elif segmenter is not None:
-                    mask = segmenter.predict(image)
-                report = foreground_crop_diagnostics(mask) if mask is not None else None
-                results[name] = silhouette_calibration(reference_silhouette(image, mask), found), found, report
-            return results
+                    segmenter = AnimeSilhouette()
+                except (ImportError, OSError, ValueError):
+                    pass
+            return {name: analyze_view_alignment(source, image, name, mask, segmenter)
+                    for name, (image, source, mask) in sources.items()}
+
         def apply(results):
             aligned = added = 0
             issues = []
@@ -914,6 +938,10 @@ class AnatomyDialog(tk.Toplevel):
             self._refresh_points(self._selected())
             summary = f"{aligned} vistas alineadas · {added} puntos sugeridos."
             self.status.set(" · ".join([summary, *issues, "Revisa o calibra manualmente."]))
+            active_view = self.views[self.view]
+            if (self.guided_image and not issues and "projection" in active_view
+                    and len(active_view["points"]) < 4):
+                self._guide_next_point()
         self._work("Analizando siluetas y puntos anatómicos…", detect, apply)
 
     def _build_manifest(self, require_ready):

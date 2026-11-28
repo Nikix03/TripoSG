@@ -78,6 +78,21 @@ class ComponentJobs:
                        (identifier, number, parameters))
             return number
 
+    def record_delivery_inputs(self, identifier, attempt, inputs):
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT parameters FROM jobs WHERE id = ? AND attempt = ? AND status = 'running'",
+                             (identifier, attempt)).fetchone()
+            if row is None:
+                raise ValueError("El intento de entrega ya no está activo.")
+            parameters = json.loads(row["parameters"])
+            parameters["input_hashes"] = inputs
+            encoded = json.dumps(parameters, ensure_ascii=False)
+            db.execute("UPDATE jobs SET parameters = ? WHERE id = ? AND attempt = ?",
+                       (encoded, identifier, attempt))
+            db.execute("UPDATE attempts SET parameters = ? WHERE job = ? AND number = ?",
+                       (encoded, identifier, attempt))
+
     def transition(self, identifier, status, error=None, result=None, *, expected=None, attempt=None):
         previous = {
             "complete": ("running",), "failed": ("running",), "cancelled": ("pending", "running"),

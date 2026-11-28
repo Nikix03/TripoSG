@@ -162,6 +162,7 @@ class KiriaDialog(tk.Toplevel):
         self.hidden = tuple(hidden)
         self.result = None
         self.delivery_requested = False
+        self.creation_requested = False
         self.plan = None
         self.busy = False
         self.provider = OllamaProvider()
@@ -178,6 +179,8 @@ class KiriaDialog(tk.Toplevel):
         bar.pack(fill="x")
         self.read_button = ttk.Button(bar, text="Ejecutar diagnóstico", command=self.run_read)
         self.read_button.pack(side="right")
+        ttk.Button(bar, text="Crear desde imagen…",
+                   command=self.request_creation).pack(side="right", padx=6)
         ttk.Button(bar, text="Preparar entrega…", command=self.request_delivery).pack(side="right", padx=6)
         ttk.Combobox(bar, textvariable=self.tool, values=names, state="readonly", width=34).pack(side="left")
         edits = ttk.Frame(self, padding=8)
@@ -299,6 +302,11 @@ class KiriaDialog(tk.Toplevel):
                 self.prepare()
 
         self._submit(lambda: self.provider.chat(model, prompt, self.selection, previous), receive)
+
+    def request_creation(self):
+        if not self.busy:
+            self.creation_requested = True
+            self.destroy()
 
     def request_delivery(self):
         if not self.busy:

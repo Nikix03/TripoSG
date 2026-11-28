@@ -1,10 +1,12 @@
 """Native delivery from a saved, reviewed Genesis reconstruction."""
 
 import json
+from hashlib import sha256
 from copy import deepcopy
 from pathlib import Path
 from shutil import copyfile
 from tempfile import mkdtemp
+from time import perf_counter
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import trimesh
@@ -100,15 +102,58 @@ DELIVERY_STAGES = (
 )
 
 
-def build_reviewed_delivery(project, folder, *, on_stage=None, cancelled=None):
-    def stage(index):
+def _hash_file(path):
+    digest = sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def delivery_inputs(project, source):
+    anatomy = source.get("anatomy_setup") or {}
+    paths = [project, source.get("model"), source.get("image")]
+    if not anatomy.get("bundled_template"):
+        paths.append(anatomy.get("template"))
+    paths.extend(region["path"] for region in source["references"])
+    paths.extend(view.get(key) for view in anatomy.get("views", {}).values()
+                 for key in ("image", "mask", "body_mask"))
+    return {str(path): _hash_file(path)
+            for path in dict.fromkeys(Path(value).resolve() for value in paths if value)}
+
+
+def verify_delivery(folder):
+    folder = Path(folder)
+    manifest = json.loads((folder / "integridad.json").read_text(encoding="utf-8"))
+    expected = manifest["files"]
+    required = {"Avatar.aeth", "avatar-modular.glb", "avatar-articulado.glb", "avatar-pc.glb",
+                "avatar-cadenas-capilares.glb", "Unity-AETHRYX.zip", "procedencia.json"}
+    actual = {path.relative_to(folder).as_posix(): _hash_file(path)
+              for path in folder.rglob("*") if path.is_file() and path != folder / "integridad.json"}
+    if not required.issubset(expected) or actual != expected:
+        raise ValueError("La entrega tiene archivos faltantes o modificados.")
+    return manifest
+
+
+def build_reviewed_delivery(project, folder, *, on_stage=None, cancelled=None, expected_inputs=None, on_inputs=None, on_output=None):
+    started = perf_counter()
+
+    def check_cancelled():
         if cancelled is not None and cancelled.is_set():
             raise DeliveryCancelled()
+
+    def stage(index):
+        check_cancelled()
         if on_stage is not None:
             on_stage(index, DELIVERY_STAGES[index])
 
     stage(0)
     source = load_project(project)
+    inputs = delivery_inputs(project, source)
+    if expected_inputs is not None and inputs != expected_inputs:
+        raise ValueError("Las entradas cambiaron desde el primer intento. Registra una entrega nueva si deseas usar los cambios.")
+    if on_inputs is not None:
+        on_inputs(inputs)
     data = source.get("anatomy_setup")
     if not data or not data.get("views"):
         raise ValueError("El proyecto necesita un ajuste de Genesis guardado y revisado.")
@@ -121,6 +166,8 @@ def build_reviewed_delivery(project, folder, *, on_stage=None, cancelled=None):
         if Path(source["model"]).suffix.lower() != ".glb":
             raise ValueError("El modelo editable guardado debe estar en GLB para preparar la entrega.")
         output = Path(mkdtemp(prefix="evolution-", dir=folder))
+        if on_output is not None:
+            on_output(output)
         modular = output / "avatar-modular.glb"
         copyfile(source["model"], modular)
     else:
@@ -128,6 +175,8 @@ def build_reviewed_delivery(project, folder, *, on_stage=None, cancelled=None):
         body, patches, errors = reconstruct_data(data, deformation_report=report)
         base, _ = export_studio_reconstruction(folder, data, body, patches, report, errors)
         output = base.parent
+        if on_output is not None:
+            on_output(output)
         modular = output / "avatar-modular.glb"
     scene = trimesh.load(modular, force="scene", process=False)
     articulated = output / "avatar-articulado.glb"
@@ -159,4 +208,20 @@ def build_reviewed_delivery(project, folder, *, on_stage=None, cancelled=None):
         "rigging": "native_genesis",
         "variants": ["editable", "articulated", "pc", "hair_chains"],
     }, ensure_ascii=False, indent=2), encoding="utf-8")
+    check_cancelled()
+    if delivery_inputs(project, source) != inputs:
+        raise ValueError("Las entradas cambiaron durante la preparación.")
+    audits = {path.name: inspect_avatar_glb(path) for path in (articulated, pc, chain_variant)}
+    if any(not audit["valid_native_glb"] for audit in audits.values()):
+        raise ValueError("Una variante articulada no superó la auditoría GLB.")
+    with ZipFile(output / "Unity-AETHRYX.zip") as archive:
+        if archive.testzip() is not None:
+            raise ValueError("Falló la verificación del ZIP de Unity.")
+    files = {path.relative_to(output).as_posix(): _hash_file(path)
+             for path in output.rglob("*") if path.is_file()}
+    (output / "integridad.json").write_text(json.dumps({
+        "inputs": inputs, "files": files, "audits": audits, "seconds": perf_counter() - started,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    verify_delivery(output)
+    check_cancelled()
     return output

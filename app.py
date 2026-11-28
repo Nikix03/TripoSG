@@ -223,6 +223,7 @@ class AethryxStudio(tk.Tk):
         file_menu.add_command(label="Recuperar generación TripoSG…", command=self.recover_generation)
         file_menu.add_command(label="Cola de componentes…", command=self.open_component_jobs)
         file_menu.add_command(label="Preparar exportación con Blender…", command=self.queue_blender_export)
+        file_menu.add_command(label="Crear avatar desde imagen…", command=self.create_avatar_from_image)
         file_menu.add_command(label="Preparar avatar desde proyecto revisado…", command=self.build_avatar_delivery)
         file_menu.add_command(label="Configurar TripoSR…", command=self.configure_triposr)
         file_menu.add_command(label="Guardar proyecto", accelerator="Ctrl+S", command=self.save_current_project)
@@ -728,6 +729,33 @@ class AethryxStudio(tk.Tk):
             self._load_reference_preview()
             self.status.set(f"Imagen cargada: {os.path.basename(path)}")
 
+    def create_avatar_from_image(self):
+        if not self._workspace_available():
+            return
+        image = filedialog.askopenfilename(
+            parent=self, title="Selecciona una imagen frontal del personaje",
+            filetypes=[("Imágenes", "*.png *.jpg *.jpeg *.webp *.bmp")],
+        )
+        if not image:
+            return
+        dialog = AnatomyDialog(self)
+        dialog.begin_from_image(image)
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+        folder = Path(dialog.result[0]).parent
+        project = folder / "Avatar-revisado.aeth"
+        model = folder / "avatar-modular.glb"
+        try:
+            setup = json.loads((folder / "referencias.json").read_text(encoding="utf-8"))
+            save_project(project, image=image, model=model, output=folder / "avatar-articulado.glb",
+                         steps=self.steps.get(), faces=self.faces.get(), seed=self.seed.get(), guidance=self.guidance.get(),
+                         anatomy_setup=setup)
+        except (OSError, ValueError, KeyError) as exc:
+            messagebox.showerror("Guardar avatar", str(exc), parent=self)
+            return
+        self._queue_avatar_delivery(project, folder)
+
     def reconstruct_anatomy(self):
         if not self._workspace_available():
             return
@@ -790,6 +818,9 @@ class AethryxStudio(tk.Tk):
         nodes = [self.model_parts[index]["node"] for index in self._selected_part_indices()]
         dialog = KiriaDialog(self, self._kiria_context(), self.loaded_scene, nodes, self._hidden_component_nodes())
         self.wait_window(dialog)
+        if dialog.creation_requested:
+            self.create_avatar_from_image()
+            return
         if dialog.delivery_requested:
             self.build_avatar_delivery()
             return
@@ -1897,27 +1928,37 @@ class AethryxStudio(tk.Tk):
         folder = filedialog.askdirectory(title="Carpeta para la entrega del avatar")
         if not folder:
             return
-        data = {"engine": "delivery", "source": source, "output": folder}
+        self._queue_avatar_delivery(source, folder)
+
+    def _queue_avatar_delivery(self, source, folder):
+        data = {"engine": "delivery", "source": str(source), "output": str(folder)}
         try:
+            if self.component_jobs is None:
+                self.component_jobs = ComponentJobs(generation_recovery_directory() / "components.sqlite3")
             identifier = self.component_jobs.add("Entrega de avatar", data)
             self._run_delivery_job(identifier, data)
         except (OSError, ValueError, sqlite3.Error) as exc:
             messagebox.showerror("Preparar avatar", str(exc), parent=self)
 
     def _run_delivery_job(self, identifier, data):
-        self.active_component_job = (identifier, self.component_jobs.start(identifier))
+        attempt = self.component_jobs.start(identifier)
+        self.active_component_job = (identifier, attempt)
         self.cancel_event = cancelled = threading.Event()
         self.generation_active = True
         self.generate_button.state(["disabled"])
         self.cancel_button.state(["!disabled"])
         self.progress.configure(mode="determinate", value=0)
         events = Queue()
+        output_folder = None
 
         def work():
             try:
                 output = build_reviewed_delivery(
                     data["source"], data["output"], cancelled=cancelled,
                     on_stage=lambda index, label: events.put(("stage", (index, label))),
+                    expected_inputs=data.get("input_hashes"),
+                    on_inputs=lambda inputs: self.component_jobs.record_delivery_inputs(identifier, attempt, inputs),
+                    on_output=lambda path: events.put(("output", path)),
                 )
             except DeliveryCancelled:
                 events.put(("cancelled", None))
@@ -1927,6 +1968,7 @@ class AethryxStudio(tk.Tk):
                 events.put(("complete", str(output / "avatar-modular.glb")))
 
         def poll():
+            nonlocal output_folder
             while True:
                 try:
                     status, value = events.get_nowait()
@@ -1939,12 +1981,16 @@ class AethryxStudio(tk.Tk):
                     if not cancelled.is_set():
                         self.status.set(f"{index + 1}/{len(DELIVERY_STAGES)} · {label}")
                     continue
-                if status == "complete":
+                if status == "output":
+                    output_folder = value
+                    continue
+                if cancelled.is_set() or status == "cancelled":
+                    detail = (f"Cancelado. Pueden quedar archivos parciales en {output_folder}"
+                              if output_folder else "Cancelado antes de crear la carpeta de entrega.")
+                    self._generation_cancelled(detail=detail)
+                elif status == "complete":
                     self._generation_finished(value)
                     self.status.set("Entrega lista para revisar en la cola.")
-                elif status == "cancelled":
-                    self._generation_cancelled()
-                    self.status.set("Entrega cancelada entre etapas.")
                 else:
                     self._generation_failed(value)
                 return
@@ -2346,16 +2392,16 @@ class AethryxStudio(tk.Tk):
         if not queued:
             self.load_model(output)
 
-    def _generation_cancelled(self):
+    def _generation_cancelled(self, *, detail=None):
         self._finish_generation_record("cancelled")
-        self._finish_component_job("cancelled")
+        self._finish_component_job("cancelled", error=detail)
         self.generation_active = False
         self.progress.stop()
         self.progress.configure(mode="determinate", value=0)
         self.generate_button.state(["!disabled"])
         self.cancel_button.state(["disabled"])
-        self.status.set("Generacion cancelada; se conservo cualquier salida anterior.")
-        self.append_log("Generacion cancelada. El archivo temporal se descarto.")
+        self.status.set(detail or "Generación cancelada. Se conservó cualquier salida anterior.")
+        self.append_log(detail or "Generación cancelada. El archivo temporal se descartó.")
 
     def _generation_failed(self, error):
         self._finish_generation_record("failed")

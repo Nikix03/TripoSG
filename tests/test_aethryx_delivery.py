@@ -4,15 +4,18 @@ from shutil import copytree
 from tempfile import TemporaryDirectory
 from threading import Event
 import unittest
+from unittest.mock import patch
 from zipfile import ZipFile
 
-from PIL import Image
+from PIL import Image, ImageDraw
 import trimesh
 
 from aethryx_anatomy import load_body_template
 from aethryx_bridge import inspect_avatar_glb
-from aethryx_delivery import DELIVERY_STAGES, DeliveryCancelled, build_reviewed_delivery
+from aethryx_delivery import DELIVERY_STAGES, DeliveryCancelled, build_reviewed_delivery, verify_delivery
+from aethryx_jobs import ComponentJobs
 from aethryx_profiles import BUNDLED_BODY
+from aethryx_reference import analyze_view_alignment
 from studio_project import load_project, save_project
 
 
@@ -33,10 +36,33 @@ class PortableDeliveryTests(unittest.TestCase):
                              references=[{"id": "front", "path": str(image), "view": "front", "bbox": [0, 0, 1, 1]}],
                              anatomy_setup={"bundled_template": True, "views": {"front": {"image": str(image)}}})
                 progress = []
+                cancelled = Event()
+
+                def cancel_midway(index, _label):
+                    if index == 2:
+                        cancelled.set()
+
+                with self.assertRaises(DeliveryCancelled):
+                    build_reviewed_delivery(project, root, on_stage=cancel_midway, cancelled=cancelled)
+                cancelled.clear()
+
+                def cancel_after_verification(folder):
+                    verify_delivery(folder)
+                    cancelled.set()
+
+                with patch("aethryx_delivery.verify_delivery", side_effect=cancel_after_verification):
+                    with self.assertRaises(DeliveryCancelled):
+                        build_reviewed_delivery(project, root, cancelled=cancelled)
+
                 output = build_reviewed_delivery(project, root, on_stage=lambda i, label: progress.append((i, label)))
+                inputs = verify_delivery(output)["inputs"]
+                image.write_bytes(b"edited reference")
+                with self.assertRaisesRegex(ValueError, "Las entradas cambiaron"):
+                    build_reviewed_delivery(project, root, expected_inputs=inputs)
                 self.assertEqual(progress, list(enumerate(DELIVERY_STAGES)))
                 copytree(output, target / "avatar")
             relocated = target / "avatar"
+            verify_delivery(relocated)
             restored = load_project(relocated / "Avatar.aeth")
             self.assertEqual(restored["hidden_components"], ["borrador"])
             self.assertTrue(Path(restored["image"]).resolve().is_relative_to(relocated.resolve()))
@@ -56,6 +82,10 @@ class PortableDeliveryTests(unittest.TestCase):
                 self.assertIn("unity_reference", manifest["dependencies"])
                 self.assertFalse(any(name.endswith(".png") for name in archive.namelist()))
 
+            (relocated / "procedencia.json").write_text("{}")
+            with self.assertRaisesRegex(ValueError, "archivos faltantes o modificados"):
+                verify_delivery(relocated)
+
     def test_delivery_cancelled_before_start_leaves_output_empty(self):
         with TemporaryDirectory() as directory:
             cancelled = Event()
@@ -63,3 +93,23 @@ class PortableDeliveryTests(unittest.TestCase):
             with self.assertRaises(DeliveryCancelled):
                 build_reviewed_delivery("unused.aeth", directory, cancelled=cancelled)
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_retry_retains_first_input_hashes(self):
+        with TemporaryDirectory() as directory:
+            jobs = ComponentJobs(Path(directory) / "queue.sqlite3")
+            identifier = jobs.add("Entrega", {"engine": "delivery"})
+            first = jobs.start(identifier)
+            hashes = {"reference.png": "sha256"}
+            jobs.record_delivery_inputs(identifier, first, hashes)
+            jobs.transition(identifier, "cancelled", attempt=first)
+            second = jobs.start(identifier)
+            self.assertEqual(jobs.entries()[0]["parameters"]["input_hashes"], hashes)
+            self.assertEqual(jobs.history(identifier)[second - 1]["parameters"]["input_hashes"], hashes)
+
+    def test_alignment_uses_alpha_without_inventing_pose_points(self):
+        image = Image.new("RGBA", (80, 100))
+        ImageDraw.Draw(image).rectangle((20, 10, 60, 90), fill="white")
+        with patch("aethryx_engines.suggest_anatomical_points", return_value={}):
+            calibration, points, _ = analyze_view_alignment("unused.png", image, "front")
+        self.assertEqual(calibration, ([40., 90.], 10.))
+        self.assertEqual(points, {})

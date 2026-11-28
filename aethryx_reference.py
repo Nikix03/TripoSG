@@ -288,6 +288,24 @@ def silhouette_calibration(foreground, points):
     return [float(np.median(torso)), floor], crown
 
 
+def analyze_view_alignment(source, image, view, body_mask=None, segmenter=None):
+    from aethryx_engines import suggest_anatomical_points
+
+    try:
+        points = pose_points_for_view(suggest_anatomical_points(source), view)
+    except (OSError, ImportError, RuntimeError, ValueError):
+        points = {}
+    mask = None
+    if body_mask:
+        with Image.open(body_mask) as saved:
+            mask = saved.convert("RGB")
+    elif segmenter is not None and image.convert("RGBA").getchannel("A").getextrema()[0] >= 32:
+        mask = segmenter.predict(image)
+    foreground = reference_silhouette(image, mask)
+    diagnostics = foreground_crop_diagnostics(mask) if mask is not None else None
+    return silhouette_calibration(foreground, points), points, diagnostics
+
+
 def profile_opposite(points, width):
     """Return a profile direction only when a visible facial landmark supports it."""
     if 0 not in points:

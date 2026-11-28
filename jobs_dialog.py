@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from PIL import Image, ImageTk
+from aethryx_delivery import verify_delivery
 from aethryx_generation import compare_candidates, rank_regional_candidates
 
 
@@ -219,4 +220,6 @@ class JobsDialog(tk.Toplevel):
     def review(self, status):
         row = self.selected()
         if row and row["status"] == "complete":
+            if status == "accepted" and row["parameters"].get("engine") == "delivery":
+                verify_delivery(Path(row["result"]).parent)
             self.jobs.transition(row["id"], status)

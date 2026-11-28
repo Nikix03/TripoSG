@@ -439,7 +439,10 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
                     pieces[f"{eye_name}-parpado-{lid}"] = part
                 for detail, part in fitted_eye_details(eye, left=left).items():
                     pieces[f"{eye_name}-{detail}"] = part
-            shirt, clearance = fit_garment_with_clearance(mesh, .016, .006, "top")
+            try:
+                shirt, clearance = fit_garment_with_clearance(mesh, .016, .006, "top")
+            except ValueError as exc:
+                raise ValueError(f"La camiseta base no superó el control de ajuste. {exc}") from exc
             if "clothing" in colors:
                 shirt = apply_material(shirt, colors["clothing"], projection="cylindrical", roughness=.8)
             update_pbr_maps(shirt, {"normal": woven_normal_map()}, resolution=512)
