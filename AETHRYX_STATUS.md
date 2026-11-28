@@ -1,5 +1,11 @@
 # Estado de AETHRYX Studio
 
+## Pendiente de referencias autorizadas
+
+- No están disponibles las vistas originales frontal, lateral y posterior de Nikix ni el GLB fuente de Mannequiny. Solo existe el render comparativo histórico de Mannequiny, que no permite repetir su IoU desde la geometría fuente.
+- La referencia detallada local es una ilustración en pose dinámica, oscura y parcial; la hoja de Phase 3 es sintética y demasiado básica. No se usaron para afirmar calidad anatómica profesional ni se inició otra inferencia TripoSG con ellas.
+- Para continuar la validación de reconstrucción hacen falta las tres referencias autorizadas y alineadas del mismo personaje; para reproducir Mannequiny hace falta su modelo fuente con licencia registrada.
+
 ## Genesis Continuation · Diagnóstico local de escena
 
 - KIRIA recibe desde Studio los nodos efectivamente cargados, sus recuentos de vértices y caras de origen y su visibilidad actual. El diagnóstico informa esos componentes como nodos geométricos, sin inferir categorías anatómicas. El acceso sigue siendo local y de solo lectura.

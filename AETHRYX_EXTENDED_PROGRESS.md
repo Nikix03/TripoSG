@@ -1,5 +1,11 @@
 # AETHRYX Studio · Genesis Extended
 
+## Bloqueo para generación y evaluación anatómica
+
+- En el checkout no están las tres referencias originales de Nikix ni el GLB fuente de Mannequiny; el único resultado de este último es el mosaico de evaluación histórico. Por ello no se puede reproducir la métrica IoU sobre el modelo fuente.
+- El recurso detallado disponible es una ilustración oscura, parcial y en pose dinámica; la referencia de Phase 3 es sintética y simple. Se evita repetirlas para una nueva afirmación de calidad o generar otro avatar que no permita evaluar anatomía.
+- No se descargó ni se ejecutó otro motor. La siguiente prueba de reconstrucción debe usar referencias autorizadas frontal, lateral y posterior del mismo personaje, en pose común y con la figura completa; la reproducción de Mannequiny requiere recuperar su archivo fuente CC BY 4.0.
+
 ## Genesis Continuation · Contexto real de KIRIA
 
 - El contexto de diagnóstico incluye los nodos geométricos de la escena activa, recuentos fuente de vértices y caras y visibilidad del visor. El catálogo conserva el permiso `read`; las pruebas confirman que los nodos pasan por el contexto autorizado y que entradas mal formadas no producen hallazgos falsos. Los nombres de nodo no se presentan como clasificación anatómica.
