@@ -78,7 +78,10 @@ class JobsDialog(tk.Toplevel):
             return
         params = row["parameters"]
         engine = params.get("engine", "triposg")
-        summary = f"{engine} · {Path(params['image']).name} · semilla {params['settings']['seed']}"
+        if engine == "blender":
+            summary = f"Blender · {Path(params['source']).name} → {Path(params['output']).suffix.upper()}"
+        else:
+            summary = f"{engine} · {Path(params['image']).name} · semilla {params['settings']['seed']}"
         result = f"\n{Path(row['result']).name}" if row["result"] else ""
         error = f"\n{row['error'][-450:]}" if row["error"] else ""
         self.details.set(summary + result + error)
@@ -116,7 +119,7 @@ class JobsDialog(tk.Toplevel):
 
     def compare(self):
         row = self.selected()
-        if not row or not row["result"]:
+        if not row or not row["result"] or Path(row["result"]).suffix.lower() != ".glb":
             return
         second = filedialog.askopenfilename(parent=self, title="Segundo candidato", filetypes=[("GLB", "*.glb")])
         if not second:
@@ -147,12 +150,13 @@ class JobsDialog(tk.Toplevel):
 
     def preview(self):
         row = self.selected()
-        if row and row["result"] and self.studio._workspace_available():
+        if row and row["result"] and Path(row["result"]).suffix.lower() == ".glb" and self.studio._workspace_available():
             self.studio.load_model(row["result"], edit=True)
 
     def fit_region(self):
         row = self.selected()
-        if not row or not row["result"] or row["status"] not in {"complete", "accepted"}:
+        if (not row or not row["result"] or Path(row["result"]).suffix.lower() != ".glb"
+                or row["status"] not in {"complete", "accepted"}):
             return
         if self.studio.loaded_scene is None:
             raise ValueError("Abre antes un avatar modular con una guía regional.")
@@ -168,7 +172,8 @@ class JobsDialog(tk.Toplevel):
         candidates = [{"path": other["result"], "engine": other["parameters"].get("engine", "triposg"),
                        "job": other["id"], "attempt": other["attempt"]}
                       for other in self.rows.values() if other["component"] == row["component"]
-                      and other["result"] and other["status"] in {"complete", "accepted"}]
+                      and other["result"] and Path(other["result"]).suffix.lower() == ".glb"
+                      and other["status"] in {"complete", "accepted"}]
         if len(candidates) < 2:
             raise ValueError("Registra al menos dos resultados con el mismo nombre de componente.")
         directory = filedialog.askdirectory(parent=self, title="Carpeta con front.png, side.png o back.png con alfa")

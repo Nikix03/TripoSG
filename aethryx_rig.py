@@ -17,6 +17,7 @@ EXPORT_PROFILES = {
     "VRChat PC Hair Batch": (.47, True),
     "VRChat PC Preserve Shape": (1., True),
     "Studio Hair Chains": (1., False),
+    "VRChat PC Hair Chains": (1., True),
     "Studio Finger Fit": (1., False),
 }
 
@@ -85,7 +86,8 @@ def profile_parts(parts, profile):
     for name, mesh in working.items():
         material = getattr(mesh.visual, "material", None)
         prefixes = (("cabello-flequillo-", "cabello-largo-")
-                    if profile in {"VRChat PC Hair Batch", "VRChat PC Preserve Shape"} else ("cabello-flequillo-",))
+                    if profile in {"VRChat PC Hair Batch", "VRChat PC Preserve Shape", "VRChat PC Hair Chains"}
+                    else ("cabello-flequillo-",))
         if merge and name.startswith(prefixes) and material is not None:
             bangs.setdefault(hash(material), []).append(name)
     for candidates in bangs.values():
@@ -98,8 +100,11 @@ def profile_parts(parts, profile):
         ])
         geometry.visual = TextureVisuals(uv=np.vstack([m.visual.uv for m in meshes]),
                                          material=meshes[0].visual.material.copy())
+        if profile == "VRChat PC Hair Chains":
+            geometry.metadata["aethryx_lock_segments"] = [(name, len(mesh.vertices))
+                                                          for name, mesh in zip(candidates, meshes)]
         working[candidates[0]] = geometry
-    if profile in {"VRChat PC Hair Batch", "VRChat PC Preserve Shape"}:
+    if profile in {"VRChat PC Hair Batch", "VRChat PC Preserve Shape", "VRChat PC Hair Chains"}:
         for eye in EYES:
             upper_name, lower_name = (f"{eye}-parpado-{suffix}" for suffix in ("superior", "inferior"))
             if upper_name not in working or lower_name not in working:
@@ -571,7 +576,7 @@ def export_rigged_avatar(scene, path, influences=4, *, profile="Studio Original"
     if guides:
         data.setdefault("extras", {})["aethryxHairGuides"] = guides
     hair_bones = {}
-    if profile == "Studio Hair Chains":
+    if profile in {"Studio Hair Chains", "VRChat PC Hair Chains"}:
         names = list(names)
         parents = parents.tolist()
         bind = bind.tolist()
@@ -609,7 +614,25 @@ def export_rigged_avatar(scene, path, influences=4, *, profile="Studio Original"
         for primitive in mesh_data["primitives"]:
             attributes = primitive["attributes"]
             vertices = glb.positions(attributes["POSITION"])
-            if name in hair_bones:
+            segments = parts[name].metadata.get("aethryx_lock_segments")
+            if hair_bones and segments:
+                indices = np.zeros((len(parts[name].vertices), 4), np.uint16)
+                weights_by_vertex = np.zeros_like(indices, dtype=np.float32)
+                offset = 0
+                for lock, count in segments:
+                    target = slice(offset, offset + count)
+                    if lock in hair_bones:
+                        indices[target], weights_by_vertex[target] = hair_chain_weights(
+                            originals[lock].visual.uv[:, 1], hair_bones[lock], influences,
+                        )
+                    else:
+                        indices[target, 0], weights_by_vertex[target, 0] = name_to_index["Head"], 1.
+                    offset += count
+                original_positions = parts[name].vertices
+                if vertices.shape != original_positions.shape or not np.allclose(vertices, original_positions, atol=1e-7, rtol=0):
+                    raise ValueError("El exportador cambió el orden de los vértices capilares agrupados.")
+                joints, weights = indices, weights_by_vertex
+            elif name in hair_bones:
                 uv = parts[name].visual.uv
                 source_indices = cKDTree(parts[name].vertices).query(vertices)[1]
                 joints, weights = hair_chain_weights(uv[source_indices, 1], hair_bones[name], influences)
@@ -633,7 +656,7 @@ def export_rigged_avatar(scene, path, influences=4, *, profile="Studio Original"
                 ]
                 mesh_data["weights"] = [0.] * len(shapes)
                 mesh_data.setdefault("extras", {})["targetNames"] = list(shapes)
-    if profile == "VRChat PC Preserve Shape":
+    if profile in {"VRChat PC Preserve Shape", "VRChat PC Hair Chains"}:
         _batch_eye_details(glb, nodes[:joint_start])
     rest = glb.accessor(np.array([0., .75, 1.5]), "SCALAR", bounds=True)
     channels, samplers = [], []

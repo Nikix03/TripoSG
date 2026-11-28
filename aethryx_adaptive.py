@@ -111,6 +111,14 @@ def build_adaptive_plan(hardware=None, engine_id="triposg"):
     target = closest_profile_target(hardware.vram_gib)
     basic_edit = hardware.ram_gib > 0 and hardware.ram_gib < 8
 
+    if engine_id == "blender":
+        return AdaptivePlan(
+            profile=EngineProfile(target, "fp32", "none", False, False, False, True, basic_edit, True),
+            hardware=hardware,
+            reason="La conversión Blender usa un proceso de CPU con cancelación independiente.",
+            oom_recovery=("terminate-worker",),
+        )
+
     if engine_id == "triposr":
         enabled = hardware.vram_gib is not None and not basic_edit
         return AdaptivePlan(

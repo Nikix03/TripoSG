@@ -1,6 +1,7 @@
 """Native delivery from a saved, reviewed Genesis reconstruction."""
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from shutil import copyfile
 from tempfile import mkdtemp
@@ -41,7 +42,7 @@ def package_for_unity(avatar, output, *, hair_chains=None):
         "Prepara el Avatar Descriptor con Tools / AETHRYX y revisa el resultado con el SDK.\n"
         "Usa Build & Test para la primera prueba. El SDK requiere revisión antes de Build & Publish.\n"
         "La importación crea los activos y el prefab. Si necesitas FBX instala Unity FBX Exporter.\n"
-        "Con la variante de cadenas, selecciona cada mechón y usa Preparar PhysBone para habilitarlo en el SDK.\n"
+        "Con la variante de cadenas, selecciona la junta inicial de cada mechón y usa Preparar PhysBone.\n"
     )
     with ZipFile(output, "x", compression=ZIP_DEFLATED) as archive:
         archive.write(avatar, manifest["avatar"])
@@ -53,6 +54,40 @@ def package_for_unity(avatar, output, *, hair_chains=None):
         archive.write(root / "LICENSE", "LICENSE")
         archive.writestr("manifest.json", json.dumps(manifest, indent=2))
         archive.writestr("IMPORTAR.txt", instructions)
+
+
+def _portable_references(source, anatomy, output):
+    """Localize known project resources. The Unity ZIP contains only the avatar and importer."""
+    anatomy = deepcopy(anatomy)
+    references = deepcopy(source["references"])
+    directory = output / "referencias"
+    copies = {}
+
+    def copy_resource(value):
+        if not value:
+            return value
+        original = Path(value).resolve(strict=True)
+        if not original.is_file():
+            raise ValueError("La referencia guardada debe ser un archivo.")
+        if original not in copies:
+            directory.mkdir(exist_ok=True)
+            target = directory / f"recurso-{len(copies) + 1:03d}{original.suffix}"
+            copyfile(original, target)
+            copies[original] = str(target)
+        return copies[original]
+
+    for state in anatomy["views"].values():
+        for key in ("image", "mask", "body_mask"):
+            if key in state:
+                state[key] = copy_resource(state[key])
+    if not anatomy.get("bundled_template") and anatomy.get("template"):
+        anatomy["template"] = copy_resource(anatomy["template"])
+    for region in references:
+        region["path"] = copy_resource(region["path"])
+    image = copy_resource(source.get("image")) or next(
+        (view["image"] for view in anatomy["views"].values() if view.get("image")), None,
+    )
+    return image, references, anatomy
 
 
 def build_reviewed_delivery(project, folder):
@@ -90,11 +125,11 @@ def build_reviewed_delivery(project, folder):
     pc = output / "avatar-pc.glb"
     export_rigged_avatar(scene, pc, profile="VRChat PC Preserve Shape")
     chain_variant = output / "avatar-cadenas-capilares.glb"
-    export_rigged_avatar(scene, chain_variant, profile="Studio Hair Chains")
+    export_rigged_avatar(scene, chain_variant, profile="VRChat PC Hair Chains")
     package_for_unity(pc, output / "Unity-AETHRYX.zip", hair_chains=chain_variant)
-    image = source.get("image") or next(iter(data["views"].values()))["image"]
+    image, references, data = _portable_references(source, data, output)
     save_project(output / "Avatar.aeth", image=image, model=modular, output=articulated,
-                 **source["settings"], references=source["references"], anatomy_setup=data,
+                 **source["settings"], references=references, anatomy_setup=data,
                  hidden_components=hidden)
     (output / "procedencia.json").write_text(json.dumps({
         "geometry": "saved_modular_project" if source.get("model") else "reviewed_genesis_reconstruction",

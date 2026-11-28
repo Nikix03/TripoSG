@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.IO;
 using UnityEditor;
@@ -37,17 +38,74 @@ namespace Nikix.Aethryx
         static void PrepareSelectedPhysBone()
         {
             var renderer = Selection.activeGameObject?.GetComponent<SkinnedMeshRenderer>();
-            if (renderer == null) return;
-            try { PreparePhysBone(renderer); }
+            try
+            {
+                if (renderer != null)
+                    PreparePhysBone(renderer);
+                else if (Selection.activeTransform != null)
+                    PrepareHairChain(Selection.activeTransform);
+            }
             catch (Exception exc) { Debug.LogError("AETHRYX: " + exc.Message); }
         }
 
-        public static Component PreparePhysBone(SkinnedMeshRenderer renderer)
+        static Type PhysBoneType()
         {
             const string typeName = "VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone";
             var type = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType(typeName))
                 .FirstOrDefault(candidate => candidate != null);
             if (type == null) throw new NotSupportedException("VRChat SDK PhysBones no está disponible.");
+            return type;
+        }
+
+        public static Component PrepareHairChain(Transform root)
+        {
+            const string suffix = "-junta-0";
+            if (!root.name.StartsWith("cabello-largo-", StringComparison.Ordinal)
+                || !root.name.EndsWith(suffix, StringComparison.Ordinal) || root.parent?.name != "Head")
+                throw new ArgumentException("Selecciona la junta inicial de un mechón Genesis.");
+            var prefix = root.name.Substring(0, root.name.Length - suffix.Length);
+            var cursor = root;
+            var chain = new Transform[4];
+            chain[0] = root;
+            for (int index = 1; index < 4; index++)
+            {
+                cursor = cursor.Find(prefix + "-junta-" + index);
+                if (cursor == null) throw new InvalidOperationException("La cadena capilar está incompleta.");
+                chain[index] = cursor;
+            }
+            var used = root.root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Any(renderer =>
+            {
+                if (renderer.sharedMesh == null) return false;
+                var bones = renderer.bones;
+                var slots = new HashSet<int>(chain.Select(bone => Array.IndexOf(bones, bone)));
+                return !slots.Contains(-1) && renderer.sharedMesh.GetAllBoneWeights().ToArray()
+                    .Where(weight => weight.weight > 0 && slots.Contains(weight.boneIndex))
+                    .Select(weight => weight.boneIndex).Distinct().Count() == 4;
+            });
+            if (!used) throw new InvalidOperationException("La cadena capilar carece de pesos activos.");
+            var type = PhysBoneType();
+            if (root.GetComponent(type) != null)
+                throw new InvalidOperationException("La cadena ya tiene un PhysBone.");
+            var component = Undo.AddComponent(root.gameObject, type);
+            try
+            {
+                using (var data = new SerializedObject(component))
+                {
+                    Find(data, "rootTransform").objectReferenceValue = root;
+                    data.ApplyModifiedProperties();
+                }
+                return component;
+            }
+            catch
+            {
+                Undo.DestroyObjectImmediate(component);
+                throw;
+            }
+        }
+
+        public static Component PreparePhysBone(SkinnedMeshRenderer renderer)
+        {
+            var type = PhysBoneType();
             if ((!renderer.name.StartsWith("cabello-largo-") && !renderer.name.StartsWith("accesorio-hamsa-"))
                 || renderer.sharedMesh == null)
                 throw new ArgumentException("Selecciona un mechón largo o un aro Genesis.");
@@ -65,24 +123,7 @@ namespace Nikix.Aethryx
                 var activeWeights = mesh.GetAllBoneWeights().ToArray();
                 if (activeWeights.Length == 0 || activeWeights.Any(weight => !chain.Contains(weight.boneIndex)))
                     throw new InvalidOperationException("La cadena capilar tiene pesos incompatibles.");
-                var root = bones[chain[0]];
-                if (root.GetComponent(type) != null)
-                    throw new InvalidOperationException("La cadena ya tiene un PhysBone.");
-                var component = Undo.AddComponent(root.gameObject, type);
-                try
-                {
-                    using (var data = new SerializedObject(component))
-                    {
-                        Find(data, "rootTransform").objectReferenceValue = root;
-                        data.ApplyModifiedProperties();
-                    }
-                    return component;
-                }
-                catch
-                {
-                    Undo.DestroyObjectImmediate(component);
-                    throw;
-                }
+                return PrepareHairChain(bones[chain[0]]);
             }
             using (var weights = mesh.GetAllBoneWeights())
                 if (headIndex < 0 || weights.Length == 0 || weights.ToArray().Any(

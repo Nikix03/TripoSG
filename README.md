@@ -132,7 +132,9 @@ The required model weights will be automatically downloaded:
 
 ## Product scope and limitations
 
-This is an experimental local front end and does not require Blender. Generated meshes are not rigged, do not include Unity/VRChat avatar setup, and have not been validated as upload-ready avatars. The viewer can approximate basic per-mesh colors but does not render complete PBR materials or textures. CPU-only generation, broad hardware coverage, and the optional Flash decoder are not validated; the Windows path uses marching cubes because the optional `diso` dependency is not available in the tested Windows setup. First use needs internet access to download model weights. Check upstream model and asset licenses before redistribution or commercial use.
+Studio keeps a native local workflow and can use Blender as an optional automated backend. Unity can prepare and export avatars with an authorized installation. The automatic workflow is designed for users without modeling experience, and professional workflows retain editable geometry and external formats.
+
+Raw TripoSG meshes still require rigging and validation. Genesis can export an articulated GLB. Upload readiness requires validation in the official VRChat SDK. CPU-only generation and the optional Flash decoder remain experimental. First use may require model weights. Check upstream model and asset licenses before redistribution or commercial use.
 
 ## Validation performed
 

@@ -195,6 +195,11 @@ def inspect_component_geometry(path):
 
 
 TOOL_REGISTRY = {
+    "inspect_blender_backend": ToolDefinition(
+        "inspect_blender_backend",
+        "Comprueba si Blender está disponible como backend de exportación local.",
+        {}, ("read",), True,
+    ),
     "audit_articulated_glb": ToolDefinition(
         "audit_articulated_glb",
         "Audita localmente articulaciones, morphs, materiales y mallas de un GLB articulado.",
@@ -346,6 +351,16 @@ def execute_tool(name, inputs, project_context=None, write_allowed=False):
             return {"status": "available", **inspect_avatar_glb(inputs.get("model_path", ""))}
         except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
             return {"status": "error", "reason": str(exc)}
+    if name == "inspect_blender_backend":
+        import subprocess
+        from aethryx_blender import blender_version, find_blender
+        executable = find_blender()
+        if executable is None:
+            return {"status": "unavailable", "reason": "No se detectó una instalación local de Blender."}
+        try:
+            return {"status": "available", "version": blender_version(executable)}
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return {"status": "unavailable", "reason": str(exc)}
     if name == "split_disconnected_components":
         return split_disconnected_components(inputs.get("model_path", ""))
     if name == "validate_avatar":

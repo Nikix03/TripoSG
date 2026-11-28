@@ -1,5 +1,16 @@
 # Estado de AETHRYX Studio
 
+## 28 de noviembre de 2026 · Genesis Evolution X
+
+- Pasaron 120 pruebas con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
+- AGENTS, documentación y hoja de ruta permiten Blender como backend automático opcional y Unity como herramienta de preparación. El flujo nativo sigue disponible para usuarios sin experiencia de modelado.
+- Studio registra conversiones Blender 4.x o 5.x en la cola persistente. El trabajador usa JSON, un subproceso sin interfaz, salida provisional y validación antes de publicar el archivo local. La cola conserva errores, cancelación y reintentos. El diagnóstico de KIRIA no encontró Blender en PATH, las rutas habituales o los registros de instalación consultados. Las conversiones BLEND y FBX quedan pendientes de una instalación local.
+- **Preparar avatar desde proyecto revisado** crea un proyecto editable, GLB articulado, variante PC, variante capilar, manifest y ZIP de Unity. La entrega final de Nikix conservó byte por byte el GLB editable de Ascendant. La variante PC pasó la auditoría local con 67.540 triángulos, 8 nodos con skinning, 53 articulaciones y 15 visemas.
+- La variante **Studio Hair Chains** convirtió las 13 guías en 52 articulaciones auxiliares. Las 13 cadenas conservaron sus cuatro índices de peso activos y los pesos sumaron uno. Al rotar una junta de cada cadena 15°, cada mechón se deformó en la comprobación numérica. La variante tiene 105 huesos totales y conserva los 53 de Genesis. Los PhysBones siguen sin validación dinámica del SDK.
+- **Studio Finger Fit** es un perfil experimental de pesos. En la mano V6, las autointersecciones a 20° bajaron de 39 a 13. A 30° bajaron de 63 a 18. Persisten cruces y el perfil no se aplicó al avatar de Nikix. Los guantes siguen como borrador.
+- El importador de Unity añade mapas normales y reconoce las cadenas capilares existentes al preparar PhysBones. Compiló con referencias de Unity 2022.3.22f1. El ZIP genera el prefab al importar en un proyecto autorizado. La ejecución del SDK sigue pendiente de la licencia anterior y no se publicó un avatar.
+- El bloque nativo se publicó en `f76d1aa`. La revisión automática rechazó la publicación del bloque Blender por el conflicto que detectó con la instrucción anterior. El backend, la integración de interfaz y la documentación permanecen como cambios locales.
+
 ## 28 de noviembre de 2026 · Genesis Ascendant
 
 - Pasaron 118 pruebas con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
@@ -293,3 +304,13 @@ Ejecuta `.\.venv\Scripts\python.exe -m aethryx_anatomy referencias.json resultad
 - El avatar anime evaluado tiene una sola superficie conectada. Para separar cabello, ojos y ropa hacen falta datos de segmentación semántica o edición explícita de las superficies. Las piezas topológicas se mantienen sin categoría anatómica.
 - La reconstrucción activa de TripoSG sigue siendo monovista. Para una prueba multivista reproducible hacen falta referencias frontal, lateral y posterior del mismo avatar en la misma pose, con encuadre y cámaras conocidos, y métricas de silueta y proporciones por vista.
 - Siguen pendientes la reconstrucción anatómica, el rig humanoide, el skinning y la validación del avatar en el SDK de VRChat. Los resultados históricos y parámetros de RTX 5070 están en los documentos Genesis, Vision y Adaptive Engine.
+
+
+## Genesis Awakening X2 ? 28 de noviembre de 2026
+
+- Entrega nativa desde un proyecto revisado. El archivo editable conserva componentes ocultos y usa rutas relativas para las im?genes, m?scaras y plantillas locales que requiere. Se verific? la reapertura desde otra carpeta. El ZIP de Unity contiene las variantes articuladas, el importador y sus instrucciones.
+- La variante PC capilar pasa de 33 a 12 slots y conserva 8 nodos con skinning, 67.540 tri?ngulos y 105 articulaciones: 53 de base y 52 auxiliares en 13 cadenas. La comparaci?n privada verific? 33.834 filas de v?rtices, pesos y matrices de reposo. Las 13 flexiones aisladas a 15? produjeron la misma deformaci?n en las variantes modular y compacta. Las dem?s cadenas permanecieron inm?viles.
+- En esas 13 piezas, VTK midi? 657 contactos y 329 v?rtices interiores en reposo. Al flexionar cada cadena por separado, la suma fue de 1.210 contactos y 544 v?rtices interiores. El ensayo registra intersecciones y no clasifica su intenci?n. La colisi?n din?mica sigue pendiente.
+- Los archivos C# del importador compilaron contra Unity 2022.3.22f1. La licencia local del editor sigue sin validaci?n activa. Quedan pendientes la importaci?n en el editor, la prueba oficial del SDK y la f?sica en ejecuci?n. No se public? ning?n avatar.
+- KIRIA abre la preparaci?n de entrega con confirmaci?n desde un proyecto guardado. El backend Blender opcional contempla inspecci?n y reparaci?n conservadora en copias. La sonda local no encontr? Blender, por lo que sus exportaciones y reparaciones quedan sin prueba de ejecuci?n.
+- Quedan pendientes la creaci?n completa desde una sola imagen, la nueva anatom?a facial y de manos, la aprobaci?n de guantes en flexi?n y la distribuci?n del UnityPackage generado por el editor.

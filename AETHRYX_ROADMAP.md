@@ -26,7 +26,7 @@ Partir de copilot/development c95d9d4, app.py Tkinter/Matplotlib; comparar con k
 - UV y texturas PBR: color base, normal, roughness, metallic, emisión. Realismo de geometría y materiales configurable sin perder estilo anime.
 - Auto-rig por adaptador (evaluar UniRig y licencia): jerarquía humanoide, dedos, ojos, mandíbula, cabello opcional, pesos normalizados, pose T/A, pruebas de deformación de hombros/codos/rodillas/dedos.
 - Ojos independientes, pivotes y mirada; parpadeo, mandíbula, boca, expresiones y visemas VRChat (15 si se elige ese modo de lipsync), blendshapes reales y previsualización de animación. No simular con texturas.
-- Asistente de flujo automático con checkpoints, cancelación, recuperación y edición por etapa. Sin Blender como requisito, ni GUI ni backend obligatorio.
+- Asistente automático con checkpoints, cancelación, recuperación y edición por etapa. El modo automático oculta parámetros técnicos. El modo creativo conserva la edición modular y KIRIA. El modo profesional expone geometría, UV, pesos, rig y formatos externos. Blender puede operar como backend automatizado opcional y Unity como motor de preparación y exportación. El flujo nativo sigue disponible.
 - Exportación GLB/OBJ inicial; GLB riggeado intermedio; FBX con skin, bind pose, morphs, materiales y animaciones mediante SDK/biblioteca compatible y licenciada. OBJ solo estático. Validar en Unity escala/ejes, Humanoid, mapeo de huesos, texturas. Complemento Unity opcional para Avatar Descriptor, eye look, lip sync, PhysBones, Poiyomi si disponible y UnityPackage desde Unity. No afirmar avatar listo hasta validación SDK.
 
 ## Fase 4: comercialización

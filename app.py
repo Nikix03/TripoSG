@@ -32,6 +32,8 @@ from aethryx_modular import BODY, visible_body_faces
 from modular_dialog import ComponentDialog
 from kiria_dialog import KiriaDialog
 from aethryx_jobs import ComponentJobs
+from aethryx_blender import export_with_blender, find_blender
+from aethryx_delivery import build_reviewed_delivery
 from aethryx_generation import ENGINES, TRIPOSR_FILES, choose_engine, generation_command, save_engine_settings
 from jobs_dialog import JobsDialog
 from studio_project import (
@@ -220,6 +222,8 @@ class AethryxStudio(tk.Tk):
         file_menu.add_command(label="Recuperar sesión sin guardar…", command=self.recover_unsaved_session)
         file_menu.add_command(label="Recuperar generación TripoSG…", command=self.recover_generation)
         file_menu.add_command(label="Cola de componentes…", command=self.open_component_jobs)
+        file_menu.add_command(label="Preparar exportación con Blender…", command=self.queue_blender_export)
+        file_menu.add_command(label="Preparar avatar desde proyecto revisado…", command=self.build_avatar_delivery)
         file_menu.add_command(label="Configurar TripoSR…", command=self.configure_triposr)
         file_menu.add_command(label="Guardar proyecto", accelerator="Ctrl+S", command=self.save_current_project)
         file_menu.add_command(label="Guardar proyecto como...", command=lambda: self.save_current_project(True))
@@ -786,6 +790,9 @@ class AethryxStudio(tk.Tk):
         nodes = [self.model_parts[index]["node"] for index in self._selected_part_indices()]
         dialog = KiriaDialog(self, self._kiria_context(), self.loaded_scene, nodes, self._hidden_component_nodes())
         self.wait_window(dialog)
+        if dialog.delivery_requested:
+            self.build_avatar_delivery()
+            return
         if dialog.result:
             path, hidden, action = dialog.result
             self.append_log(f"KIRIA · {action} · {', '.join(nodes)}")
@@ -1880,21 +1887,114 @@ class AethryxStudio(tk.Tk):
                 "settings": settings, "references": self.reference_regions, "engine": engine,
                 "engine_options": options}
 
+    def build_avatar_delivery(self):
+        if not self._workspace_available():
+            return
+        source = filedialog.askopenfilename(title="Proyecto con ajuste revisado", filetypes=[("AETHRYX", "*.aeth")])
+        if not source or not messagebox.askyesno("Ajuste revisado",
+                                                 "¿Confirmas que revisaste las referencias y correspondencias guardadas?"):
+            return
+        folder = filedialog.askdirectory(title="Carpeta para la entrega del avatar")
+        if not folder:
+            return
+        self.engine_probe_active = True
+        self.status.set("Preparando el avatar y su paquete local…")
+        result = Queue()
+
+        def work():
+            try:
+                result.put((True, build_reviewed_delivery(source, folder)))
+            except Exception as exc:
+                result.put((False, str(exc)))
+
+        def poll():
+            try:
+                ok, value = result.get_nowait()
+            except Empty:
+                self.after(100, poll)
+                return
+            self.engine_probe_active = False
+            if ok:
+                self.append_log(f"Entrega de avatar guardada en {value}")
+                self.load_model(str(value / "avatar-modular.glb"), edit=True)
+            else:
+                self.status.set("La preparación del avatar falló.")
+                messagebox.showerror("Preparación del avatar", value, parent=self)
+
+        threading.Thread(target=work, daemon=True).start()
+        self.after(100, poll)
+
+    def queue_blender_export(self):
+        if not self._workspace_available():
+            return
+        executable = find_blender()
+        if executable is None:
+            selected = filedialog.askopenfilename(title="Ejecutable local de Blender",
+                                                  filetypes=[("Blender", "blender.exe")], parent=self)
+            if not selected:
+                return
+            executable = find_blender(selected)
+        if executable is None:
+            messagebox.showerror("Blender", "Selecciona una instalación local de Blender.")
+            return
+        source = filedialog.askopenfilename(title="GLB de entrada", filetypes=[("GLB", "*.glb")], parent=self)
+        if not source:
+            return
+        output = filedialog.asksaveasfilename(title="Salida profesional", defaultextension=".blend",
+                                              filetypes=[("BLEND", "*.blend"), ("FBX", "*.fbx"), ("GLB", "*.glb")],
+                                              parent=self)
+        if not output:
+            return
+        repair = messagebox.askyesno("Revisión geométrica", "¿Limpiar degenerados de mallas sin rig ni shape keys?",
+                                     parent=self)
+        self.open_component_jobs()
+        if self.component_jobs is not None:
+            self.component_jobs.add(Path(source).stem, {"engine": "blender", "source": source,
+                                                       "output": output, "executable": str(executable), "repair": repair})
+            self.jobs_dialog.refresh()
+
     def run_component_job(self, row):
         if not self._workspace_available():
             return
         data = row["parameters"]
         output = Path(data["output"])
+        output = output.with_name(f"{output.stem}-{row['id'][:12]}-intento-{row['attempt'] + 1}{output.suffix}")
+        if data.get("engine") == "blender":
+            self._run_blender_job(row["id"], data, output)
+            return
         self.image_path.set(data["image"])
-        self.output_path.set(str(output.with_name(
-            f"{output.stem}-{row['id'][:12]}-intento-{row['attempt'] + 1}{output.suffix}",
-        )))
+        self.output_path.set(str(output))
         for key, value in data["settings"].items():
             getattr(self, key).set(value)
         self.reference_regions = data["references"]
         self._load_reference_preview()
         self.generate(queued_job=row["id"], engine=data.get("engine", "triposg"),
                       engine_options=data.get("engine_options", {}))
+
+    def _run_blender_job(self, identifier, data, output):
+        self.active_component_job = (identifier, self.component_jobs.start(identifier))
+        self.cancel_event = cancelled = threading.Event()
+        self.generation_active = True
+        self.progress.configure(mode="indeterminate")
+        self.progress.start(10)
+        self.generate_button.state(["disabled"])
+        self.cancel_button.state(["!disabled"])
+        self.status.set("Exportando con Blender en segundo plano…")
+
+        def run():
+            try:
+                report = export_with_blender(data["executable"], data["source"], output, cancelled,
+                                             repair=data.get("repair", False))
+            except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                self.after(0, self._generation_failed, str(exc))
+                return
+            if report is None:
+                self.after(0, self._generation_cancelled)
+            else:
+                self.after(0, self.append_log, json.dumps(report, ensure_ascii=False))
+                self.after(0, self._generation_finished, str(output))
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _finish_component_job(self, status, *, error=None, result=None):
         active, self.active_component_job = self.active_component_job, None
