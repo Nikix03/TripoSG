@@ -90,7 +90,24 @@ def _portable_references(source, anatomy, output):
     return image, references, anatomy
 
 
-def build_reviewed_delivery(project, folder):
+class DeliveryCancelled(Exception):
+    """Cancellation requested between export stages."""
+
+
+DELIVERY_STAGES = (
+    "Comprobar proyecto", "Preparar geometría", "Articular avatar",
+    "Optimizar variantes", "Empaquetar para Unity", "Guardar proyecto editable",
+)
+
+
+def build_reviewed_delivery(project, folder, *, on_stage=None, cancelled=None):
+    def stage(index):
+        if cancelled is not None and cancelled.is_set():
+            raise DeliveryCancelled()
+        if on_stage is not None:
+            on_stage(index, DELIVERY_STAGES[index])
+
+    stage(0)
     source = load_project(project)
     data = source.get("anatomy_setup")
     if not data or not data.get("views"):
@@ -99,6 +116,7 @@ def build_reviewed_delivery(project, folder):
         # A saved setup can contain reviewed suggestions. The caller confirms reuse explicitly.
         data = {**data, "reviewed_suggestions_reused": True}
     data = {**data, "export_hybrid": True, "export_rig": True, "repair_hair_in_poses": True}
+    stage(1)
     if source.get("model"):
         if Path(source["model"]).suffix.lower() != ".glb":
             raise ValueError("El modelo editable guardado debe estar en GLB para preparar la entrega.")
@@ -120,13 +138,17 @@ def build_reviewed_delivery(project, folder):
                                  if name not in avatar.hidden or name == BODY})
         visible.metadata.update(scene.metadata)
         scene = visible
+    stage(2)
     if not articulated.is_file():
         export_rigged_avatar(scene, articulated)
+    stage(3)
     pc = output / "avatar-pc.glb"
     export_rigged_avatar(scene, pc, profile="VRChat PC Preserve Shape")
     chain_variant = output / "avatar-cadenas-capilares.glb"
     export_rigged_avatar(scene, chain_variant, profile="VRChat PC Hair Chains")
+    stage(4)
     package_for_unity(pc, output / "Unity-AETHRYX.zip", hair_chains=chain_variant)
+    stage(5)
     image, references, data = _portable_references(source, data, output)
     save_project(output / "Avatar.aeth", image=image, model=modular, output=articulated,
                  **source["settings"], references=references, anatomy_setup=data,

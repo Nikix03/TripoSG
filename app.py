@@ -33,7 +33,7 @@ from modular_dialog import ComponentDialog
 from kiria_dialog import KiriaDialog
 from aethryx_jobs import ComponentJobs
 from aethryx_blender import export_with_blender, find_blender
-from aethryx_delivery import build_reviewed_delivery
+from aethryx_delivery import DELIVERY_STAGES, DeliveryCancelled, build_reviewed_delivery
 from aethryx_generation import ENGINES, TRIPOSR_FILES, choose_engine, generation_command, save_engine_settings
 from jobs_dialog import JobsDialog
 from studio_project import (
@@ -1897,29 +1897,57 @@ class AethryxStudio(tk.Tk):
         folder = filedialog.askdirectory(title="Carpeta para la entrega del avatar")
         if not folder:
             return
-        self.engine_probe_active = True
-        self.status.set("Preparando el avatar y su paquete local…")
-        result = Queue()
+        data = {"engine": "delivery", "source": source, "output": folder}
+        try:
+            identifier = self.component_jobs.add("Entrega de avatar", data)
+            self._run_delivery_job(identifier, data)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            messagebox.showerror("Preparar avatar", str(exc), parent=self)
+
+    def _run_delivery_job(self, identifier, data):
+        self.active_component_job = (identifier, self.component_jobs.start(identifier))
+        self.cancel_event = cancelled = threading.Event()
+        self.generation_active = True
+        self.generate_button.state(["disabled"])
+        self.cancel_button.state(["!disabled"])
+        self.progress.configure(mode="determinate", value=0)
+        events = Queue()
 
         def work():
             try:
-                result.put((True, build_reviewed_delivery(source, folder)))
+                output = build_reviewed_delivery(
+                    data["source"], data["output"], cancelled=cancelled,
+                    on_stage=lambda index, label: events.put(("stage", (index, label))),
+                )
+            except DeliveryCancelled:
+                events.put(("cancelled", None))
             except Exception as exc:
-                result.put((False, str(exc)))
+                events.put(("failed", str(exc)))
+            else:
+                events.put(("complete", str(output / "avatar-modular.glb")))
 
         def poll():
-            try:
-                ok, value = result.get_nowait()
-            except Empty:
-                self.after(100, poll)
+            while True:
+                try:
+                    status, value = events.get_nowait()
+                except Empty:
+                    self.after(100, poll)
+                    return
+                if status == "stage":
+                    index, label = value
+                    self.progress.configure(value=100 * index / len(DELIVERY_STAGES))
+                    if not cancelled.is_set():
+                        self.status.set(f"{index + 1}/{len(DELIVERY_STAGES)} · {label}")
+                    continue
+                if status == "complete":
+                    self._generation_finished(value)
+                    self.status.set("Entrega lista para revisar en la cola.")
+                elif status == "cancelled":
+                    self._generation_cancelled()
+                    self.status.set("Entrega cancelada entre etapas.")
+                else:
+                    self._generation_failed(value)
                 return
-            self.engine_probe_active = False
-            if ok:
-                self.append_log(f"Entrega de avatar guardada en {value}")
-                self.load_model(str(value / "avatar-modular.glb"), edit=True)
-            else:
-                self.status.set("La preparación del avatar falló.")
-                messagebox.showerror("Preparación del avatar", value, parent=self)
 
         threading.Thread(target=work, daemon=True).start()
         self.after(100, poll)
@@ -1957,6 +1985,9 @@ class AethryxStudio(tk.Tk):
         if not self._workspace_available():
             return
         data = row["parameters"]
+        if data.get("engine") == "delivery":
+            self._run_delivery_job(row["id"], data)
+            return
         output = Path(data["output"])
         output = output.with_name(f"{output.stem}-{row['id'][:12]}-intento-{row['attempt'] + 1}{output.suffix}")
         if data.get("engine") == "blender":

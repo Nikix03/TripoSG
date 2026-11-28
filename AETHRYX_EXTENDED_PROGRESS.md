@@ -258,11 +258,24 @@
 - Pasaron 94 pruebas. Se conservaron el entorno virtual, los pesos y los activos originales.
 
 
-## Genesis Awakening X2 ? 28 de noviembre de 2026
+## Genesis Awakening X2 — 28 de noviembre de 2026
 
-- Entrega nativa desde un proyecto revisado. El archivo editable conserva componentes ocultos y usa rutas relativas para las im?genes, m?scaras y plantillas locales que requiere. Se verific? la reapertura desde otra carpeta. El ZIP de Unity contiene las variantes articuladas, el importador y sus instrucciones.
-- La variante PC capilar pasa de 33 a 12 slots y conserva 8 nodos con skinning, 67.540 tri?ngulos y 105 articulaciones: 53 de base y 52 auxiliares en 13 cadenas. La comparaci?n privada verific? 33.834 filas de v?rtices, pesos y matrices de reposo. Las 13 flexiones aisladas a 15? produjeron la misma deformaci?n en las variantes modular y compacta. Las dem?s cadenas permanecieron inm?viles.
-- En esas 13 piezas, VTK midi? 657 contactos y 329 v?rtices interiores en reposo. Al flexionar cada cadena por separado, la suma fue de 1.210 contactos y 544 v?rtices interiores. El ensayo registra intersecciones y no clasifica su intenci?n. La colisi?n din?mica sigue pendiente.
-- Los archivos C# del importador compilaron contra Unity 2022.3.22f1. La licencia local del editor sigue sin validaci?n activa. Quedan pendientes la importaci?n en el editor, la prueba oficial del SDK y la f?sica en ejecuci?n. No se public? ning?n avatar.
-- KIRIA abre la preparaci?n de entrega con confirmaci?n desde un proyecto guardado. El backend Blender opcional contempla inspecci?n y reparaci?n conservadora en copias. La sonda local no encontr? Blender, por lo que sus exportaciones y reparaciones quedan sin prueba de ejecuci?n.
-- Quedan pendientes la creaci?n completa desde una sola imagen, la nueva anatom?a facial y de manos, la aprobaci?n de guantes en flexi?n y la distribuci?n del UnityPackage generado por el editor.
+- Entrega nativa desde un proyecto revisado. El archivo editable conserva componentes ocultos y usa rutas relativas para las imágenes, máscaras y plantillas locales que requiere. Se verificó la reapertura desde otra carpeta. El ZIP de Unity contiene las variantes articuladas, el importador y sus instrucciones.
+- La variante PC capilar pasa de 33 a 12 slots y conserva 8 nodos con skinning, 67.540 triángulos y 105 articulaciones: 53 de base y 52 auxiliares en 13 cadenas. La comparación privada verificó 33.834 filas de vértices, pesos y matrices de reposo. Las 13 flexiones aisladas a 15° produjeron la misma deformación en las variantes modular y compacta. Las demás cadenas permanecieron inmóviles.
+- En esas 13 piezas, VTK midió 657 contactos y 329 vértices interiores en reposo. Al flexionar cada cadena por separado, la suma fue de 1.210 contactos y 544 vértices interiores. El ensayo registra intersecciones y no clasifica su intención. La colisión dinámica sigue pendiente.
+- Los archivos C# del importador compilaron contra Unity 2022.3.22f1. La licencia local del editor sigue sin validación activa. Quedan pendientes la importación en el editor, la prueba oficial del SDK y la física en ejecución. No se publicó ningún avatar.
+- KIRIA abre la preparación de entrega con confirmación desde un proyecto guardado. El backend Blender opcional contempla inspección y reparación conservadora en copias. La sonda local no encontró Blender, por lo que sus exportaciones y reparaciones quedan sin prueba de ejecución.
+- Quedan pendientes la creación completa desde una sola imagen, la nueva anatomía facial y de manos, la aprobación de guantes en flexión y la distribución del UnityPackage generado por el editor.
+
+
+## Genesis Orchestra
+
+- Studio y KIRIA preparan la entrega desde un proyecto revisado mediante la cola persistente. Las seis etapas indican trabajo real. Se puede cancelar entre etapas, reintentar en una carpeta nueva y previsualizar el GLB desde la cola. Si Studio se cierra, la cola marca el intento como interrumpido y permite reintentar desde el proyecto guardado. Un intento cancelado puede dejar archivos parciales locales.
+- El ensayo privado verificó el ZIP y auditó un GLB capilar con 67.540 triángulos, 105 articulaciones, 8 nodos con skinning y 15 visemas. Todavía requiere correspondencias revisadas y revisión visual. El ensayo reutilizó la geometría guardada.
+- La sonda de Blender no encontró un ejecutable. La licencia de Unity sigue pendiente de validación. Quedan pendientes las conversiones Blender, la generación integral desde imágenes y la validación artística y dinámica.
+
+### Diseño de VRChat Connect
+
+- El editor autorizado debe ofrecer la plataforma activa de Unity y mostrarla en una confirmación junto con el prefab seleccionado. La capa del SDK se activa cuando el panel registra un constructor mediante `TryGetBuilder<IVRCSdkAvatarBuilderApi>`.
+- Tras confirmar, el adaptador de prueba local invocaría `BuildAndTest` y presentaría excepciones y mensajes del SDK. Un resultado local queda asociado al prefab y la plataforma evaluada. La revisión de rendimiento corresponde al SDK.
+- La publicación futura requiere una ruta separada con sesión iniciada en el SDK oficial, selección explícita de privacidad y nueva confirmación para el avatar y la plataforma. El ZIP y AETHRYX mantienen fuera las credenciales. La implementación y la verificación del adaptador se reservan para un editor con el SDK autorizado. [API pública de VRChat](https://creators.vrchat.com/sdk/public-sdk-api/)

@@ -78,7 +78,9 @@ class JobsDialog(tk.Toplevel):
             return
         params = row["parameters"]
         engine = params.get("engine", "triposg")
-        if engine == "blender":
+        if engine == "delivery":
+            summary = f"Entrega de avatar · {Path(params['source']).name}"
+        elif engine == "blender":
             summary = f"Blender · {Path(params['source']).name} → {Path(params['output']).suffix.upper()}"
         else:
             summary = f"{engine} · {Path(params['image']).name} · semilla {params['settings']['seed']}"
@@ -155,7 +157,7 @@ class JobsDialog(tk.Toplevel):
 
     def fit_region(self):
         row = self.selected()
-        if (not row or not row["result"] or Path(row["result"]).suffix.lower() != ".glb"
+        if (not row or row["parameters"].get("engine") == "delivery" or not row["result"] or Path(row["result"]).suffix.lower() != ".glb"
                 or row["status"] not in {"complete", "accepted"}):
             return
         if self.studio.loaded_scene is None:
