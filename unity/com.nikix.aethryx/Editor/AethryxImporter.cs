@@ -25,10 +25,12 @@ namespace Nikix.Aethryx
         [Serializable] class Accessor { public int bufferView, byteOffset, count, componentType; public string type; }
         [Serializable] class View { public int byteOffset, byteLength, byteStride; }
         [Serializable] class MaterialDef { public Pbr pbrMetallicRoughness; public string alphaMode;
-            public float alphaCutoff = .5f; public float[] emissiveFactor; public TextureInfo emissiveTexture; }
+            public float alphaCutoff = .5f; public float[] emissiveFactor;
+            public TextureInfo emissiveTexture; public NormalInfo normalTexture; }
         [Serializable] class Pbr { public float[] baseColorFactor; public TextureInfo baseColorTexture;
             public float roughnessFactor = 1f, metallicFactor = 1f; }
         [Serializable] class TextureInfo { public int index; }
+        [Serializable] class NormalInfo : TextureInfo { public float scale = 1f; }
         [Serializable] class TextureDef { public int source; }
         [Serializable] class ImageDef { public int bufferView; }
         [Serializable] class AnimationDef { public string name; public Channel[] channels; public Sampler[] samplers; }
@@ -274,6 +276,8 @@ namespace Nikix.Aethryx
                     combined.AddBlendShapeFrame(name, 100, deltas, null, null);
                 }
                 combined.RecalculateBounds();
+                if (definition.primitives.All(primitive => primitive.attributes.TEXCOORD_0 >= 0))
+                    combined.RecalculateTangents();
                 return combined;
             }
             catch
@@ -318,6 +322,7 @@ namespace Nikix.Aethryx
                     mesh.AddBlendShapeFrame(extras.targetNames[i], 100, delta, null, null);
                 }
             mesh.RecalculateBounds();
+            if (a.TEXCOORD_0 >= 0) mesh.RecalculateTangents();
             return mesh;
         }
 
@@ -339,6 +344,12 @@ namespace Nikix.Aethryx
                     material.mainTexture = BuildTexture(file, pbr.baseColorTexture, folder + "/color-" + index);
                 }
             }
+            if (def.normalTexture != null)
+            {
+                material.SetTexture("_BumpMap", BuildNormalTexture(file, def.normalTexture, folder + "/normal-" + index + ".png"));
+                material.SetFloat("_BumpScale", def.normalTexture.scale);
+                material.EnableKeyword("_NORMALMAP");
+            }
             if (def.emissiveFactor != null && def.emissiveFactor.Length == 3)
             {
                 material.SetColor("_EmissionColor",
@@ -356,6 +367,23 @@ namespace Nikix.Aethryx
             }
             AssetDatabase.CreateAsset(material, folder + "/pbr-" + index + ".mat");
             return material;
+        }
+
+        static Texture2D BuildNormalTexture(Binary file, TextureInfo info, string path)
+        {
+            var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false, true);
+            try
+            {
+                if (!ImageConversion.LoadImage(texture, file.Image(file.Data.textures[info.index].source)))
+                    throw new InvalidDataException("No se pudo decodificar el mapa normal GLB.");
+                File.WriteAllBytes(path, texture.EncodeToPNG());
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (TextureImporter)AssetImporter.GetAtPath(path);
+                importer.textureType = TextureImporterType.NormalMap;
+                importer.SaveAndReimport();
+                return AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(texture); }
         }
 
         static Texture2D BuildTexture(Binary file, TextureInfo info, string path)

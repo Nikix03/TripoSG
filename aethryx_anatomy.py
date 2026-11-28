@@ -444,6 +444,17 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
                 shirt = apply_material(shirt, colors["clothing"], projection="cylindrical", roughness=.8)
             update_pbr_maps(shirt, {"normal": woven_normal_map()}, resolution=512)
             pieces["prenda-camiseta"] = shirt
+            if outline and data.get("repair_hair_in_poses") is True:
+                from aethryx_rig import PosePreview, hair_clearance_bodies
+                preview = PosePreview(trimesh.Scene(pieces))
+                posed = hair_clearance_bodies(preview)
+                for name in hair:
+                    cap = name == "cabello-fondo"
+                    pieces[name], repair = clear_hair_penetrations(
+                        mesh, pieces[name], clearance=.0035 if cap else .002, posed_bodies=posed,
+                        repair_roots=True, paired_shell=cap,
+                    )
+                    hair_review[name]["pose_repair"] = repair
             provenance = {
                 name: ("deformed_template" if name == "cuerpo-base" else
                        "procedural_reference_guided" if outline and name.startswith("cabello-") else "procedural")

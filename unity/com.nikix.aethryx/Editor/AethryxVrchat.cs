@@ -54,6 +54,36 @@ namespace Nikix.Aethryx
             var bones = renderer.bones;
             int headIndex = Array.FindIndex(bones, bone => bone != null && bone.name == "Head");
             var mesh = renderer.sharedMesh;
+            var chain = Enumerable.Range(0, 4)
+                .Select(index => Array.FindIndex(bones, bone => bone != null && bone.name == renderer.name + "-junta-" + index))
+                .ToArray();
+            if (chain.Any(index => index >= 0))
+            {
+                if (headIndex < 0 || chain.Any(index => index < 0) || bones[chain[0]].parent != bones[headIndex]
+                    || Enumerable.Range(1, 3).Any(i => bones[chain[i]].parent != bones[chain[i - 1]]))
+                    throw new InvalidOperationException("La cadena capilar de Genesis está incompleta.");
+                var activeWeights = mesh.GetAllBoneWeights().ToArray();
+                if (activeWeights.Length == 0 || activeWeights.Any(weight => !chain.Contains(weight.boneIndex)))
+                    throw new InvalidOperationException("La cadena capilar tiene pesos incompatibles.");
+                var root = bones[chain[0]];
+                if (root.GetComponent(type) != null)
+                    throw new InvalidOperationException("La cadena ya tiene un PhysBone.");
+                var component = Undo.AddComponent(root.gameObject, type);
+                try
+                {
+                    using (var data = new SerializedObject(component))
+                    {
+                        Find(data, "rootTransform").objectReferenceValue = root;
+                        data.ApplyModifiedProperties();
+                    }
+                    return component;
+                }
+                catch
+                {
+                    Undo.DestroyObjectImmediate(component);
+                    throw;
+                }
+            }
             using (var weights = mesh.GetAllBoneWeights())
                 if (headIndex < 0 || weights.Length == 0 || weights.ToArray().Any(
                     weight => weight.boneIndex != headIndex || weight.weight < .999f))

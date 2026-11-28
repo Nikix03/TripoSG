@@ -1,0 +1,105 @@
+"""Native delivery from a saved, reviewed Genesis reconstruction."""
+
+import json
+from pathlib import Path
+from shutil import copyfile
+from tempfile import mkdtemp
+from zipfile import ZIP_DEFLATED, ZipFile
+
+import trimesh
+
+from aethryx_anatomy import export_studio_reconstruction, reconstruct_data
+from aethryx_bridge import inspect_avatar_glb
+from aethryx_modular import BODY, ModularAvatar
+from aethryx_rig import export_rigged_avatar
+from studio_project import load_project, save_project
+
+
+def package_for_unity(avatar, output, *, hair_chains=None):
+    audit = inspect_avatar_glb(avatar)
+    if not audit["valid_native_glb"]:
+        raise ValueError("El paquete requiere un GLB articulado válido.")
+    root = Path(__file__).resolve().parent
+    package = root / "unity" / "com.nikix.aethryx"
+    manifest = {
+        "schema": 1, "avatar": "Assets/AETHRYX/avatar.glb",
+        "dependencies": {"unity_reference": "2022.3.22f1", "vrchat_sdk_avatars_reference": "3.10.6",
+                         "optional_unity_fbx_exporter_reference": "4.2.1"},
+        "included": ["GLB with embedded materials", "AETHRYX importer", "installation instructions"],
+        "sdk_validated": False,
+        "audit": {key: audit[key] for key in ("joints", "visemes", "skinned_nodes", "triangles")},
+    }
+    if hair_chains:
+        chains_audit = inspect_avatar_glb(hair_chains)
+        if not chains_audit["valid_native_glb"]:
+            raise ValueError("La variante de cadenas capilares no pasó la auditoría GLB.")
+        manifest["hair_chain_variant"] = "Assets/AETHRYX/avatar-cadenas.glb"
+    instructions = (
+        "Abre un proyecto autorizado de Avatars en Unity mediante VRChat Creator Companion.\n"
+        "Copia las carpetas Assets y Packages desde este ZIP al proyecto de prueba.\n"
+        "En Tools / AETHRYX / Importar avatar Genesis, selecciona Assets/AETHRYX/avatar.glb.\n"
+        "Prepara el Avatar Descriptor con Tools / AETHRYX y revisa el resultado con el SDK.\n"
+        "Usa Build & Test para la primera prueba. El SDK requiere revisión antes de Build & Publish.\n"
+        "La importación crea los activos y el prefab. Si necesitas FBX instala Unity FBX Exporter.\n"
+        "Con la variante de cadenas, selecciona cada mechón y usa Preparar PhysBone para habilitarlo en el SDK.\n"
+    )
+    with ZipFile(output, "x", compression=ZIP_DEFLATED) as archive:
+        archive.write(avatar, manifest["avatar"])
+        if hair_chains:
+            archive.write(hair_chains, manifest["hair_chain_variant"])
+        for path in sorted(package.rglob("*")):
+            if path.is_file():
+                archive.write(path, (Path("Packages") / package.name / path.relative_to(package)).as_posix())
+        archive.write(root / "LICENSE", "LICENSE")
+        archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+        archive.writestr("IMPORTAR.txt", instructions)
+
+
+def build_reviewed_delivery(project, folder):
+    source = load_project(project)
+    data = source.get("anatomy_setup")
+    if not data or not data.get("views"):
+        raise ValueError("El proyecto necesita un ajuste de Genesis guardado y revisado.")
+    if any(view.get("suggested") for view in data["views"].values()):
+        # A saved setup can contain reviewed suggestions. The caller confirms reuse explicitly.
+        data = {**data, "reviewed_suggestions_reused": True}
+    data = {**data, "export_hybrid": True, "export_rig": True, "repair_hair_in_poses": True}
+    if source.get("model"):
+        if Path(source["model"]).suffix.lower() != ".glb":
+            raise ValueError("El modelo editable guardado debe estar en GLB para preparar la entrega.")
+        output = Path(mkdtemp(prefix="evolution-", dir=folder))
+        modular = output / "avatar-modular.glb"
+        copyfile(source["model"], modular)
+    else:
+        report = {}
+        body, patches, errors = reconstruct_data(data, deformation_report=report)
+        base, _ = export_studio_reconstruction(folder, data, body, patches, report, errors)
+        output = base.parent
+        modular = output / "avatar-modular.glb"
+    scene = trimesh.load(modular, force="scene", process=False)
+    articulated = output / "avatar-articulado.glb"
+    hidden = source.get("hidden_components", []) if source.get("model") else []
+    if hidden:
+        avatar = ModularAvatar(scene, hidden)
+        visible = trimesh.Scene({name: avatar.get(name, world=True) for name in avatar.nodes
+                                 if name not in avatar.hidden or name == BODY})
+        visible.metadata.update(scene.metadata)
+        scene = visible
+    if not articulated.is_file():
+        export_rigged_avatar(scene, articulated)
+    pc = output / "avatar-pc.glb"
+    export_rigged_avatar(scene, pc, profile="VRChat PC Preserve Shape")
+    chain_variant = output / "avatar-cadenas-capilares.glb"
+    export_rigged_avatar(scene, chain_variant, profile="Studio Hair Chains")
+    package_for_unity(pc, output / "Unity-AETHRYX.zip", hair_chains=chain_variant)
+    image = source.get("image") or next(iter(data["views"].values()))["image"]
+    save_project(output / "Avatar.aeth", image=image, model=modular, output=articulated,
+                 **source["settings"], references=source["references"], anatomy_setup=data,
+                 hidden_components=hidden)
+    (output / "procedencia.json").write_text(json.dumps({
+        "geometry": "saved_modular_project" if source.get("model") else "reviewed_genesis_reconstruction",
+        "anatomy_observations": list(data["views"]),
+        "rigging": "native_genesis",
+        "variants": ["editable", "articulated", "pc", "hair_chains"],
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    return output

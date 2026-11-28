@@ -16,6 +16,8 @@ EXPORT_PROFILES = {
     "VRChat PC Optimized": (.47, True), "VRChat Mobile": (.30, True),
     "VRChat PC Hair Batch": (.47, True),
     "VRChat PC Preserve Shape": (1., True),
+    "Studio Hair Chains": (1., False),
+    "Studio Finger Fit": (1., False),
 }
 
 
@@ -254,7 +256,7 @@ def humanoid_skeleton(body, eyes=None, offsets=None):
     return names, np.asarray(parents, dtype=np.intp), positions
 
 
-def skin_weights(vertices, skeleton, influences=4):
+def skin_weights(vertices, skeleton, influences=4, *, finger_focus=False):
     if type(influences) is not int or not 1 <= influences <= 4:
         raise ValueError("Usa entre una y cuatro influencias por vértice.")
     names, parents, positions = skeleton
@@ -274,6 +276,11 @@ def skin_weights(vertices, skeleton, influences=4):
     inverse = np.take_along_axis(distances, nearest, axis=1) + (.012 * span)**2
     weights = inverse**-2
     weights /= weights.sum(axis=1, keepdims=True)
+    if finger_focus:
+        digit_joint = np.array([name.endswith(("Proximal", "Intermediate", "Distal")) for name in names])
+        selected = digit_joint[nearest[:, 0]]
+        weights[selected] **= 3
+        weights[selected] /= weights[selected].sum(axis=1, keepdims=True)
     joints, result = np.zeros((len(vertices), 4), dtype=np.uint16), np.zeros((len(vertices), 4), dtype=np.float32)
     joints[:, :influences], result[:, :influences] = nearest, weights
     return joints, result
@@ -490,6 +497,21 @@ def hair_physics_guides(parts):
     return guides
 
 
+def hair_chain_weights(longitudinal, chain_start, influences=4):
+    along = np.interp(np.clip(longitudinal, 0., 1.), [0., .35, .7, 1.], [3., 2., 1., 0.])
+    low = np.minimum(along.astype(int), 2)
+    fraction = along - low
+    indices = np.zeros((len(along), 4), np.uint16)
+    weights = np.zeros((len(along), 4), np.float32)
+    if influences == 1:
+        indices[:, 0] = chain_start + np.rint(along).astype(int)
+        weights[:, 0] = 1
+        return indices, weights
+    indices[:, 0], indices[:, 1] = chain_start + low, chain_start + low + 1
+    weights[:, 0], weights[:, 1] = 1 - fraction, fraction
+    return indices, weights
+
+
 def _batch_eye_details(glb, nodes):
     """Keep eye detail primitives intact while sharing their head-bound renderer."""
     meshes = glb.document["meshes"]
@@ -537,7 +559,10 @@ def export_rigged_avatar(scene, path, influences=4, *, profile="Studio Original"
         raise ValueError("La exportación articulada requiere un cuerpo cerrado y orientado.")
     skeleton = humanoid_skeleton(body, parts, scene.metadata.get("aethryx_joint_offsets"))
     names, parents, bind = skeleton
-    body_joints, body_weights = skin_weights(np.asarray(body.vertices), skeleton, influences)
+    if profile == "Studio Finger Fit":
+        body_joints, body_weights = skin_weights(np.asarray(body.vertices), skeleton, influences, finger_focus=True)
+    else:
+        body_joints, body_weights = skin_weights(np.asarray(body.vertices), skeleton, influences)
     tree = cKDTree(body.vertices)
     facial = facial_morphs(body)
     glb = _GlbBuffers(trimesh.Scene(parts).export(file_type="glb", include_normals=True))
@@ -545,6 +570,20 @@ def export_rigged_avatar(scene, path, influences=4, *, profile="Studio Original"
     guides = hair_physics_guides(originals)
     if guides:
         data.setdefault("extras", {})["aethryxHairGuides"] = guides
+    hair_bones = {}
+    if profile == "Studio Hair Chains":
+        names = list(names)
+        parents = parents.tolist()
+        bind = bind.tolist()
+        for guide in guides:
+            name = guide["name"]
+            start = len(names)
+            hair_bones[name] = start
+            for index, point in enumerate(guide["points"]):
+                names.append(f"{name}-junta-{index}")
+                parents.append(names.index("Head") if index == 0 else start + index - 1)
+                bind.append(point)
+        parents, bind = np.asarray(parents), np.asarray(bind)
     nodes = data["nodes"]
     joint_start = len(nodes)
     name_to_index = {name: index for index, name in enumerate(names)}
@@ -570,7 +609,11 @@ def export_rigged_avatar(scene, path, influences=4, *, profile="Studio Original"
         for primitive in mesh_data["primitives"]:
             attributes = primitive["attributes"]
             vertices = glb.positions(attributes["POSITION"])
-            if rigid:
+            if name in hair_bones:
+                uv = parts[name].visual.uv
+                source_indices = cKDTree(parts[name].vertices).query(vertices)[1]
+                joints, weights = hair_chain_weights(uv[source_indices, 1], hair_bones[name], influences)
+            elif rigid:
                 joints = np.zeros((len(vertices), 4), np.uint16)
                 weights = np.zeros((len(vertices), 4), np.float32)
                 joints[:, 0], weights[:, 0] = name_to_index[rigid], 1.
@@ -608,7 +651,7 @@ def export_rigged_avatar(scene, path, influences=4, *, profile="Studio Original"
 
 
 class PosePreview:
-    def __init__(self, scene, influences=4, *, simplify=False, offsets=None):
+    def __init__(self, scene, influences=4, *, simplify=False, offsets=None, finger_focus=False):
         avatar = ModularAvatar(scene)
         if BODY not in avatar.nodes:
             raise ValueError("Crea primero el cuerpo base.")
@@ -616,7 +659,10 @@ class PosePreview:
         body = originals[BODY]
         stored = scene.metadata.get("aethryx_joint_offsets") if offsets is None else offsets
         self.skeleton = humanoid_skeleton(body, originals, stored)
-        joints, weights = skin_weights(np.asarray(body.vertices), self.skeleton, influences)
+        if finger_focus:
+            joints, weights = skin_weights(np.asarray(body.vertices), self.skeleton, influences, finger_focus=True)
+        else:
+            joints, weights = skin_weights(np.asarray(body.vertices), self.skeleton, influences)
         tree = cKDTree(np.asarray(body.vertices).copy())
         names = self.skeleton[0]
         self.parts, self.binding = {}, {}
