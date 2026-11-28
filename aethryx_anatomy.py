@@ -67,7 +67,7 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
     if len(np.unique(anchors, axis=0)) != len(anchors):
         raise ValueError("Los puntos de control deben ocupar posiciones distintas.")
 
-    matrices, offsets, observations, masks, visibility, reference_colors = [], [], [], [], [], []
+    matrices, offsets, observations, masks, visibility, reference_colors, axes = [], [], [], [], [], [], []
     names = [name for name in VIEWS if name in data["views"]]
     partial = data.get("allow_inferred_depth") is True
     if not names or set(names) != set(data["views"]) or (len(names) != 3 and not partial):
@@ -93,6 +93,7 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
         offsets.append(projection[:, 3])
         observations.append(points)
         visibility.append(visible)
+        axes.append((True, not (name == "side" and view.get("horizontal_only") is True)))
         mask = None
         if view.get("mask"):
             with Image.open(root / view["mask"]) as image:
@@ -102,10 +103,11 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
         masks.append(mask)
 
     system = np.vstack(matrices)
-    if np.linalg.matrix_rank(system) != 3 and not partial:
+    active_rows = np.asarray(axes).ravel()
+    if np.linalg.matrix_rank(system[active_rows]) != 3 and not partial:
         raise ValueError("Las cámaras no permiten recuperar profundidad.")
     targets = []
-    measured = np.asarray(visibility).T.repeat(2, axis=1)
+    measured = np.asarray(visibility).T.repeat(2, axis=1) & active_rows
     values = np.hstack([points - offset for points, offset in zip(observations, offsets)])
     ranks = {}
     for index, rows in enumerate(measured):
@@ -125,10 +127,10 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
         raise ValueError("El ajuste produjo geometría inválida o caras colapsadas.")
     errors = {
         name: float(np.sqrt(np.mean(np.sum(
-            (mesh.vertices[ids[visible]] @ matrix.T + offset - points[visible]) ** 2, axis=1,
+            (mesh.vertices[ids[visible]] @ matrix.T + offset - points[visible])[:, active_axes] ** 2, axis=1,
         ))))
-        for name, matrix, offset, points, visible in zip(
-            names, matrices, offsets, observations, visibility,
+        for name, matrix, offset, points, visible, active_axes in zip(
+            names, matrices, offsets, observations, visibility, axes,
         )
     }
     patches = partition_surfaces(mesh, matrices, offsets, masks, data.get("palette", {}),
@@ -169,6 +171,8 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
             "anchor_rank": ranks, "inferred_anchor_depths": sum(rank < 3 for rank in ranks.values()),
             "surface_model": "deformed_template",
             "visible_regional_colors": observed_colors,
+            "reprojection_axes": {name: "xy" if use_vertical else "x"
+                                  for name, (_, use_vertical) in zip(names, axes)},
         }
     return mesh, patches, errors
 

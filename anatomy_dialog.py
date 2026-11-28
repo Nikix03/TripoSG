@@ -70,6 +70,7 @@ class AnatomyDialog(tk.Toplevel):
         self.export_rig = tk.BooleanVar(value=False)
         self.export_hybrid = tk.BooleanVar(value=False)
         self.infer_occlusion_depth = tk.BooleanVar(value=False)
+        self.side_horizontal_only = tk.BooleanVar(value=False)
         self.segmenter = None
         self.see_through = None
         self.segment_cancel = Event()
@@ -174,6 +175,8 @@ class AnatomyDialog(tk.Toplevel):
         ttk.Checkbutton(controls, text="Volumen semántico", variable=self.visual_hull).pack(side="left", padx=4)
         ttk.Checkbutton(controls, text="Exportar rig GLB", variable=self.export_rig).pack(side="left", padx=4)
         ttk.Checkbutton(controls, text="Avatar con cara, cabello y camiseta", variable=self.export_hybrid).pack(side="left", padx=4)
+        ttk.Checkbutton(controls, text="Lateral solo horizontal", variable=self.side_horizontal_only,
+                        command=self._invalidate_comparison).pack(side="left", padx=4)
         ttk.Checkbutton(controls, text="Inferir puntos ocluidos", variable=self.infer_occlusion_depth).pack(side="left", padx=4)
         ttk.Button(controls, text="Reconstruir y validar…", command=self._fit).pack(side="right")
 
@@ -923,7 +926,11 @@ class AnatomyDialog(tk.Toplevel):
                 name: {vertex for vertex, (point, _) in state["points"].items() if point is not None}
                 for name, state in self.views.items()
             }
-            usable = set().union(*visible.values()) if may_infer else visible["side"] & (visible["front"] | visible["back"])
+            frontal = visible["front"] | visible["back"]
+            if may_infer:
+                usable = frontal if self.side_horizontal_only.get() else frontal | visible["side"]
+            else:
+                usable = visible["side"] & frontal
             indices = [vertex for vertex in indices if vertex in usable or
                        (not may_infer and vertex not in POSE_VERTICES.values())]
         views = {}
@@ -933,6 +940,8 @@ class AnatomyDialog(tk.Toplevel):
             if require_ready and ("image" not in state or "projection" not in state):
                 raise ValueError(f"Carga y calibra la vista {VIEW_LABELS[name].lower()}.")
             view = {key: deepcopy(value) for key, value in state.items() if key != "points"}
+            if name == "side":
+                view["horizontal_only"] = self.side_horizontal_only.get()
             view["landmarks"] = [
                 state["points"].get(vertex, (None, False))[0] or [None, None] for vertex in indices
             ]
@@ -1027,6 +1036,7 @@ class AnatomyDialog(tk.Toplevel):
         self.side.set(data.get("side_opposite", views["side"].get("projection", [[0, 0, -1]])[0][2] > 0))
         self.side_manual = data.get("side_manual", "side_opposite" in data)
         self.infer_occlusion_depth.set(data.get("allow_inferred_depth") is True)
+        self.side_horizontal_only.set(views["side"].get("horizontal_only") is True)
         self.export_rig.set(data.get("export_rig") is True)
         self.export_hybrid.set(data.get("export_hybrid") is True)
         for key, var in self.factors.items():
@@ -1095,7 +1105,11 @@ class AnatomyDialog(tk.Toplevel):
             self.status.set("Exportación bloqueada. Revisa la silueta o corrige el ajuste.")
             messagebox.showerror("Geometría rechazada", "\n".join(issues), parent=self)
             return
-        summary = "\n".join(f"{VIEW_LABELS[name]} {error:.2f} px" for name, error in errors.items())
+        axes = report["reference_evidence"]["reprojection_axes"]
+        summary = "\n".join(
+            f"{VIEW_LABELS[name]} {error:.2f} px" + (" horizontal" if axes[name] == "x" else "")
+            for name, error in errors.items()
+        )
         closed = "sí" if report["watertight"] else "no"
         winding = "sí" if report["winding_consistent"] else "no"
         self.status.set("Validación terminada. Puedes guardar o corregir el ajuste.")

@@ -17,6 +17,31 @@ from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
 
 
 class ReconstructionTests(unittest.TestCase):
+    def test_lateral_horizontal_observations_preserve_frontal_height(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            template = trimesh.creation.box()
+            template.export(root / "template.ply")
+            Image.new("RGB", (100, 100), "gray").save(root / "view.png")
+            ids = [0, 1, 2, 4]
+            anchors = template.vertices[ids]
+            front = [[30, 0, 0, 50], [0, -30, 0, 50]]
+            side = [[0, 0, -30, 50], [0, -30, 0, 50]]
+            views = {
+                "front": {"image": "view.png", "projection": front,
+                          "landmarks": (anchors @ np.asarray(front)[:, :3].T + [50, 50]).tolist()},
+                "side": {"image": "view.png", "projection": side, "horizontal_only": True,
+                         "landmarks": (anchors @ np.asarray(side)[:, :3].T + [44, 60]).tolist()},
+            }
+            report = {}
+            fitted, _, errors = reconstruct_data({
+                "template": "template.ply", "vertex_indices": ids, "views": views,
+                "allow_inferred_depth": True,
+            }, root, deformation_report=report)
+            np.testing.assert_allclose(fitted.vertices, template.vertices + [0, 0, .2])
+            self.assertLess(max(errors.values()), 1e-9)
+            self.assertEqual(report["reference_evidence"]["reprojection_axes"], {"front": "xy", "side": "x"})
+
     def test_hybrid_export_keeps_editable_components_and_valid_rig(self):
         from aethryx_bridge import inspect_avatar_glb
 

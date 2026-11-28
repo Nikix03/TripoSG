@@ -1,5 +1,11 @@
 # AETHRYX Studio · Genesis Extended
 
+## Genesis Breakthrough · Perfil horizontal y comparación común
+
+- **Lateral solo horizontal** conserva la calibración de la cámara para máscara y render. En el ajuste de anclas utiliza solo la coordenada horizontal de esa vista. Las anclas que solo aparecen en ese perfil necesitan otra vista para recuperar posición. La regresión verifica que el desplazamiento vertical del perfil no desplaza las alturas de la plantilla ajustada y que el perfil sí modifica profundidad.
+- La comparación común reencuadró cada modelo ortográficamente a la misma altura y centro por vista, con raster de altura 910 y las mismas máscaras. Con máscaras revisadas, Genesis de tres vistas obtuvo 56,89 % frontal, 44,64 % lateral y 62,35 % posterior. TripoSG obtuvo 43,88 %, 50,58 % y 38,46 %. TripoSR obtuvo 88,01 %, 31,41 % y 68,28 %. Las siluetas incluyen pelo y prendas. Las mejoras frente a TripoSG se observan en frontal y posterior.
+- La geometría pasó el validador de deformación de Genesis y el GLB articulado pasó la auditoría local. La lateral aporta evidencia de profundidad para hombro y cadera. Las demás anclas y la geometría ocluida requieren más observaciones compatibles. La importación del avatar en Unity y la clasificación de VRChat siguen pendientes de validación externa.
+
 ## Genesis Breakthrough · TripoSR en Windows y flujo por componentes
 
 - Para reproducir el ensayo de TripoSR, ejecuta `scripts/inference_triposr.py --help` con un Python que tenga PyTorch CUDA, OmegaConf, Transformers y scikit-image, usando el repositorio TripoSR y su checkpoint locales. Pasa `--config` y `--dino-config` con las dos configuraciones oficiales, `--image` con una entrada RGBA y `--output` con una ruta GLB nueva. El trabajador sustituye el extractor por marching cubes de scikit-image dentro del proceso y convierte de Z vertical a Y vertical. No se instaló software en el entorno principal. [Código TripoSR](https://github.com/VAST-AI-Research/TripoSR) · [Pesos MIT](https://huggingface.co/stabilityai/TripoSR) · [Configuración TripoSR](https://huggingface.co/stabilityai/TripoSR/blob/main/config.yaml) · [Configuración DINO](https://huggingface.co/facebook/dino-vitb16/blob/main/config.json)

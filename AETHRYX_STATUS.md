@@ -1,5 +1,12 @@
 # Estado de AETHRYX Studio
 
+## 28 de noviembre de 2026 · Breakthrough · Ajuste articulado con tres vistas
+
+- Genesis permite tratar el perfil como una observación horizontal para que los cambios de altura de esa pose queden fuera del ajuste. El ajuste guarda la opción y registra los ejes usados para calcular cada error de reproyección.
+- El ensayo privado empleó 12 anclas de torso y extremidades en frontal, ocho en posterior y dos en lateral, hombro y cadera visibles. Con suavizado 0,055, dos anclas recuperaron profundidad de las observaciones y diez conservaron la de plantilla. Tras 5,93 s de ajuste, exportación y evaluación inicial en CPU, la auditoría confirmó 53 articulaciones, 12 nodos con skinning y 15 visemas.
+- Con máscaras originales y el protocolo común de encuadre por altura y centro, la IoU de Genesis en frontal, lateral y posterior fue 56,51 %, 44,49 % y 61,68 %. TripoSG obtuvo 43,66 %, 50,40 % y 38,17 %. TripoSR obtuvo 87,51 %, 31,32 % y 67,72 %. El ensayo frontal de Genesis con una vista obtuvo 60,47 %. Las tres imágenes siguen teniendo poses diferentes y el avatar mantiene cara, cabello y camiseta procedurales.
+- Pasaron 112 pruebas. Los GLB, máscaras y comparaciones permanecen en el directorio privado.
+
 ## 28 de noviembre de 2026 · Breakthrough · Motores, vestuario y cola
 
 - Pasaron las 111 pruebas de Studio con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
