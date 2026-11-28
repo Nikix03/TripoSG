@@ -2,22 +2,28 @@
 
 import argparse
 from pathlib import Path
+import sys
 
 import numpy as np
 from PIL import Image, ImageDraw
 import pyvista as pv
 import trimesh
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from aethryx_rendering import orthographic_camera
+
 
 def render_review(source, output, *, toon=False):
     scene = trimesh.load(source, force="scene", process=False)
-    center = scene.bounds.mean(axis=0)
+    bounds = np.asarray(scene.bounds)
+    center = bounds.mean(axis=0)
     height = scene.extents[1]
     closeup = center + [0, .377 * height, 0]
     cameras = (
-        ("Frontal", center, [0, 0, 1], .57),
-        ("Lateral", center, [1, 0, 0], .57),
-        ("Posterior", center, [0, 0, -1], .57),
+        ("Frontal", None, [0, 0, 1], None),
+        ("Lateral", None, [1, 0, 0], None),
+        ("Posterior", None, [0, 0, -1], None),
         ("Rostro", closeup + [0, .018 * height, 0], [0, 0, 1], .134),
     )
     size = (430, 540)
@@ -51,9 +57,19 @@ def render_review(source, output, *, toon=False):
                         plotter.add_mesh(poly, scalars="toon_rgb", rgb=True, lighting=False)
                     else:
                         plotter.add_mesh(poly, color=color, smooth_shading=True)
-            plotter.camera_position = (target + np.asarray(direction) * height * 3, target, (0, 1, 0))
             plotter.enable_parallel_projection()
-            plotter.camera.parallel_scale = scale * height
+            if target is None:
+                position, focal_point, up, fitted_scale = orthographic_camera(
+                    bounds, direction, (0, 1, 0), size,
+                )
+                plotter.camera_position = (position, focal_point, up)
+                plotter.camera.parallel_scale = fitted_scale
+            else:
+                plotter.camera_position = (
+                    target + np.asarray(direction) * height * 3, target, (0, 1, 0),
+                )
+                plotter.camera.parallel_scale = scale * height
+            plotter.reset_camera_clipping_range()
             pixels = plotter.screenshot(return_img=True)
         finally:
             plotter.close()

@@ -1,5 +1,12 @@
 # AETHRYX Studio · Genesis Extended
 
+## Genesis Continuation · Encuadre completo
+
+- Se verificó `AGENTS.md`, ambos documentos de progreso, el estado limpio de `codex/development` y la coincidencia del remoto `fork` con `8c1cb22`. La rama `copilot/continuation` parte de ese commit. Antes de los cambios pasaron las 94 pruebas existentes.
+- `aethryx_rendering.orthographic_camera` ajusta la proyección ortográfica a los límites tridimensionales y la relación de aspecto. Los renderizadores de malla y revisión Genesis la usan para las tres vistas corporales; las pruebas cubren cámaras frontal, lateral y posterior con una malla fuera del origen.
+- Evidencia regenerada desde el GLB de Phase 3: [vista frontal](test_assets/anime/genesis-phase3/genesis-phase3-75-framed-front.png), [lateral](test_assets/anime/genesis-phase3/genesis-phase3-75-framed-side.png), [posterior](test_assets/anime/genesis-phase3/genesis-phase3-75-framed-rear.png) y [revisión conjunta](test_assets/anime/genesis-phase3/genesis-phase3-75-framed-review.png). La figura completa queda visible en cada cámara.
+- Pasaron las 97 pruebas. El activo procede de la referencia sintética simple de Phase 3; la mejora es de encuadre, no de anatomía ni de calidad de reconstrucción. No se descargaron pesos ni se ejecutó inferencia.
+
 ## Punto de partida
 
 - Rama `codex/development`. Commit base validado `12bc16f`.

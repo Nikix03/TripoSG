@@ -1,5 +1,11 @@
 # Estado de AETHRYX Studio
 
+## Genesis Continuation · Encuadre de cámaras
+
+- Continuación desde `codex/development` en `8c1cb22`, con el árbol verificado limpio. Se creó `copilot/continuation`; las 94 pruebas existentes pasaron antes de editar.
+- El render ortográfico ahora calcula foco y escala con los límites reales de la malla, para que las vistas frontal, lateral y posterior incluyan la figura completa aunque esté desplazada del origen. Se regeneró evidencia del GLB de Phase 3: [hoja de vistas](test_assets/anime/genesis-phase3/genesis-phase3-75-framed-review.png).
+- Pasaron 97 pruebas. Esta evidencia solo verifica encuadre y orientación. El personaje de prueba procede de una hoja sintética sencilla y conserva defectos anatómicos; no es una reconstrucción profesional ni una nueva inferencia.
+
 ## Genesis Origin · Anatomía y peinado reutilizables
 
 - **Cuerpo anime** ofrece los perfiles neutro, femenino y masculino con las bandas faciales de V6 y piezas oculares editables. Los tres cuerpos pasaron el validador y produjeron 11 piezas faciales cada uno.
