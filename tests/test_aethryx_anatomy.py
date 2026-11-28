@@ -28,7 +28,7 @@ class ReconstructionTests(unittest.TestCase):
             )
             modular = trimesh.load(path.parent / "avatar-modular.glb", force="scene", process=False)
             self.assertIn("cuerpo-base", modular.graph.nodes_geometry)
-            self.assertIn("ropa-camiseta", modular.graph.nodes_geometry)
+            self.assertIn("prenda-camiseta", modular.graph.nodes_geometry)
             rig = inspect_avatar_glb(path.parent / "avatar-articulado.glb")
             self.assertTrue(rig["valid_native_glb"], rig["errors"])
             self.assertEqual(rig["joints"], 53)

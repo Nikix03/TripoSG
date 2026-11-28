@@ -27,6 +27,7 @@ from aethryx_reference import (
 )
 from proportion_dialog import ProportionDialog
 from mask_dialog import MaskDialog
+from character_sheet import export_confirmed_panels
 
 
 VIEW_LABELS = dict(zip(VIEWS, ("Frontal", "Lateral", "Posterior")))
@@ -43,7 +44,7 @@ IMAGE_FILES = [("Imagen", "*.png *.jpg *.jpeg *.webp *.bmp")]
 
 
 class AnatomyDialog(tk.Toplevel):
-    def __init__(self, master):
+    def __init__(self, master, reference_regions=()):
         super().__init__(master)
         self.title("AETHRYX · Reconstrucción anatómica")
         self.geometry("1160x790")
@@ -54,6 +55,7 @@ class AnatomyDialog(tk.Toplevel):
         self.result = None
         self.draft = None
         self.triposg_crop = None
+        self.reference_regions = deepcopy(reference_regions)
         self.profile = tk.StringVar(value="Anime neutro")
         self.template_path = None
         self.template = None
@@ -94,20 +96,26 @@ class AnatomyDialog(tk.Toplevel):
     def _build(self):
         toolbar = ttk.Frame(self, padding=8)
         toolbar.pack(fill="x")
+        mask_tools = ttk.Frame(self, padding=(8, 0, 8, 6))
+        mask_tools.pack(fill="x")
         for label, command in (
             ("Plantilla corporal…", self._load_template),
             ("Abrir ajuste…", self._open_setup),
             ("Guardar ajuste…", self._save_setup),
             ("Cargar imagen…", self._load_image),
             ("Cargar conjunto…", self._load_reference_set),
+            ("Usar paneles confirmados…", self._import_confirmed_panels),
+        ):
+            ttk.Button(toolbar, text=label, command=command).pack(side="left", padx=3)
+        for label, command in (
             ("Máscara RGB…", self._load_mask),
             ("Máscara corporal…", self._load_body_mask),
             ("Paleta…", self._edit_palette),
             ("Segmentar ONNX…", self._segment_current),
             ("Reparar silueta…", self._repair_body_mask),
         ):
-            ttk.Button(toolbar, text=label, command=command).pack(side="left", padx=3)
-        ttk.Label(toolbar, textvariable=self.status, wraplength=360).pack(side="left", padx=10)
+            ttk.Button(mask_tools, text=label, command=command).pack(side="left", padx=3)
+        ttk.Label(mask_tools, textvariable=self.status, wraplength=390).pack(side="left", padx=10)
         views = ttk.Frame(self, padding=(8, 0, 8, 6))
         views.pack(fill="x")
         choose = ttk.Combobox(views, textvariable=self.view_label, values=list(VIEW_LABELS.values()),
@@ -293,6 +301,32 @@ class AnatomyDialog(tk.Toplevel):
         self._invalidate_comparison()
         self.view_label.set(VIEW_LABELS[next(name for name in VIEWS if name in chosen)])
         self._change_view()
+
+    def _import_confirmed_panels(self):
+        if self.busy:
+            return
+        if not self.reference_regions:
+            self.status.set("Confirma los recortes de cuerpo completo en el editor de hojas de Studio.")
+            return
+        if not messagebox.askyesno("Importar paneles",
+                                   "¿Guardar los paneles confirmados y reiniciar los ajustes de esas vistas?",
+                                   parent=self):
+            return
+        directory = filedialog.askdirectory(parent=self)
+        if not directory:
+            return
+        try:
+            panels = export_confirmed_panels(self.reference_regions, directory)
+            for name in VIEWS:
+                if name in panels:
+                    with Image.open(panels[name]) as source:
+                        self.images[name] = source.convert("RGBA")
+                    self.views[name] = {"image": panels[name], "points": {}}
+            self._invalidate_comparison()
+            self._change_view()
+            self.status.set(f"{len(panels)} paneles guardados. Calibra las vistas ortogonales cargadas.")
+        except (OSError, ValueError) as exc:
+            self._error(exc)
 
     def _load_mask(self):
         self._select_mask("mask", "Máscara semántica")

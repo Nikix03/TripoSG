@@ -87,6 +87,13 @@ class GenesisExtendedTests(unittest.TestCase):
             restored.apply_outfit(path)
             self.assertEqual(set(restored.nodes), {BODY, "prenda-falda", "prenda-vestido"})
             np.testing.assert_array_equal(restored.get(BODY).faces, self.body.faces)
+            path = Path(tmp) / "visible.glb"
+            avatar.hidden.add("prenda-falda")
+            avatar.export_outfit(path, visible_only=True)
+            restored.hidden.add("prenda-vestido")
+            restored.apply_outfit(path, switch=True)
+            self.assertEqual(restored.hidden, {"prenda-falda"})
+            self.assertIn("prenda-falda", restored.nodes)
 
     def test_skin_rest_is_identity_and_movement_propagates(self):
         body = self.body

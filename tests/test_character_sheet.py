@@ -6,6 +6,7 @@ from PIL import Image
 
 from character_sheet import (
     crop_reference,
+    export_confirmed_panels,
     normalize_bbox,
     select_primary_region,
     generation_reference,
@@ -16,6 +17,21 @@ from aethryx_engines import analyze_reference_image, engine_catalog, missing_ref
 
 
 class CharacterSheetTests(unittest.TestCase):
+    def test_export_confirmed_panels_keeps_source_and_ignores_unreviewed_proposals(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "sheet.png"
+            Image.new("RGB", (100, 80), "white").save(path)
+            original = path.read_bytes()
+            front = {"id": "front", "path": str(path), "view": "front", "bbox": [0, 0, .5, 1]}
+            side = {**front, "id": "side", "view": "side", "confirmed": False}
+            outputs = export_confirmed_panels([front, side], folder)
+            self.assertEqual(set(outputs), {"front"})
+            with Image.open(outputs["front"]) as crop:
+                self.assertEqual(crop.size, (50, 80))
+            self.assertEqual(path.read_bytes(), original)
+            with self.assertRaises(ValueError):
+                export_confirmed_panels([front, {**front, "id": "duplicated"}], folder)
+
     def test_normalize_drag_coordinates(self):
         self.assertEqual(
             normalize_bbox((80, 60), (20, 10), (100, 80)),

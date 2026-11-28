@@ -1,6 +1,7 @@
 from math import ceil, floor, isfinite
 from numbers import Integral, Real
 from pathlib import Path
+from tempfile import mkdtemp
 
 from PIL import Image
 
@@ -186,6 +187,27 @@ def select_primary_region(regions, preferred_view="front"):
         copied["primary"] = copied["id"] == selected["id"]
         result.append(copied)
     return validate_reference_regions(result)
+
+
+def export_confirmed_panels(regions, directory):
+    """Write reviewed full-body crops to a new folder without modifying their sources."""
+    panels = {}
+    for region in validate_reference_regions(regions):
+        view = region["view"]
+        if not region["confirmed"] or view not in FULL_BODY_VIEWS:
+            continue
+        if view in panels:
+            raise ValueError(f"Hay más de un panel confirmado para {REFERENCE_VIEW_LABELS[view]}.")
+        panels[view] = crop_reference(region["path"], region["bbox"])
+    if not panels:
+        raise ValueError("Confirma al menos un panel de cuerpo completo en el editor de hojas.")
+    folder = Path(mkdtemp(prefix="paneles-", dir=directory))
+    result = {}
+    for view, panel in panels.items():
+        path = folder / f"{view}.png"
+        panel.save(path, format="PNG")
+        result[view] = str(path)
+    return result
 
 
 def generation_reference(regions, fallback_path):

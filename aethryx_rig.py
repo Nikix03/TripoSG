@@ -583,6 +583,22 @@ class PosePreview:
         return transformed, points
 
 
+def component_pose_contacts(scene, node):
+    """Check a component in rest, demonstration pose and raised arms."""
+    from aethryx_modular import body_contacts
+
+    solver = PosePreview(scene)
+    if node == BODY or node not in solver.parts:
+        raise ValueError("Selecciona una pieza distinta del cuerpo base.")
+    result = {}
+    for name, pose in (("reposo", {}), ("demostración", demo_rotations()), ("brazos elevados", solver.t_pose())):
+        vertices, _ = solver.evaluate(pose)
+        body, component = (solver.parts[key].copy() for key in (BODY, node))
+        body.vertices, component.vertices = vertices[BODY], vertices[node]
+        result[name] = body_contacts(body, component)
+    return result
+
+
 def preview_pose(scene, influences=4):
     preview = PosePreview(scene, influences)
     parts, _ = preview.evaluate(demo_rotations())

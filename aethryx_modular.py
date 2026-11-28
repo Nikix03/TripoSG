@@ -488,6 +488,33 @@ def hair_silhouette_overlap(first, second, size=256):
     return result
 
 
+def remove_nonmanifold_flaps(mesh):
+    """Remove isolated triangles attached by one overloaded edge, preserving vertex attributes."""
+    counts = np.bincount(mesh.edges_unique_inverse)
+    incidence = counts[mesh.faces_unique_edges]
+    flaps = ((incidence > 2).sum(axis=1) == 1) & ((incidence == 1).sum(axis=1) == 2)
+    if not flaps.any() or flaps.sum() > max(1, .02 * len(mesh.faces)):
+        return mesh, 0
+    candidate = mesh.copy()
+    candidate.update_faces(~flaps)
+    candidate.remove_unreferenced_vertices()
+    remaining = np.bincount(candidate.edges_unique_inverse)
+    if (np.count_nonzero(remaining > 2) >= np.count_nonzero(counts > 2)
+            or np.count_nonzero(remaining == 1) > np.count_nonzero(counts == 1)):
+        return mesh, 0
+    return candidate, int(flaps.sum())
+
+
+def generated_hair_passes_review(review):
+    """Require both collision clearance and minimum agreement with the scalp guide."""
+    coverage = review["crown_coverage_after"]
+    return (
+        review["closed_volume"] and review["contacts"] == review["inside"] == 0
+        and coverage is not None and coverage >= .50
+        and min(review["guide_after"].values()) >= .30
+    )
+
+
 def review_generated_hair(body, guide, original):
     """Clean an aligned copy while bounding changes to the silhouette and scalp coverage."""
     fitted, initial_contacts = refine_component_fit(body, guide, original)
@@ -499,6 +526,7 @@ def review_generated_hair(body, guide, original):
     candidate.remove_unreferenced_vertices()
     if not len(candidate.faces):
         raise ValueError("La malla capilar carece de triángulos utilizables.")
+    candidate, removed_flaps = remove_nonmanifold_flaps(candidate)
     split = candidate.split(only_watertight=False, repair=False)
     main = max(split, key=lambda piece: piece.area)
     guide_tree = cKDTree(guide.vertices)
@@ -530,6 +558,9 @@ def review_generated_hair(body, guide, original):
                 (not fitted.is_volume or candidate.is_volume))
     result = candidate if accepted else fitted
     final_contacts = contacts if accepted else initial_contacts
+    if not accepted:
+        retained = {view: 1.0 for view in retained}
+        guide_after, after = guide_before, before
     seam_repair = False
     if accepted and not result.is_volume and getattr(original.visual, "kind", None) is None:
         repaired = _repair_hair_seams(result)
@@ -550,6 +581,7 @@ def review_generated_hair(body, guide, original):
     boundary_edges = int(np.count_nonzero(incidence == 1))
     result.metadata["aethryx_hair_review"] = {
         "cleanup_kept": bool(accepted), "degenerate_or_duplicate_faces": removed_faces,
+        "removed_nonmanifold_flaps": removed_flaps if accepted else 0,
         "discarded_islands": len(split) - len(keep), "added_faces": added_faces,
         "boundary_before_fill": open_boundary_before, "boundary_edges": boundary_edges,
         "nonmanifold_edges": int(np.count_nonzero(incidence > 2)),
@@ -655,6 +687,46 @@ def fit_sleeves(body, clearance=.009, thickness=.004):
         if any(report.values()) or not sleeve.is_volume:
             raise ValueError(f"Manga {suffix} rechazada. Contactos {report['contacts']}, vértices interiores {report['inside']}.")
         pieces[f"prenda-manga-{suffix}"] = apply_material(sleeve, "#52318a", projection="cylindrical", roughness=.83)
+    return pieces
+
+
+def fit_trousers(body, color="#343957"):
+    """Fit a closed garment shell from the waist to both ankles."""
+    if not body.is_volume:
+        raise ValueError("El pantalón requiere un cuerpo cerrado y orientado.")
+    height = body.extents[1]
+    centers = body.triangles_center
+    y = (centers[:, 1] - body.bounds[0, 1]) / height
+    waist = abs(centers[:, 0] - body.bounds.mean(axis=0)[0]) < .32 * body.extents[0]
+    selected = (y > .09) & (y < .56) & waist
+    trousers = _shell(body, selected, .002 * height, .0011 * height)
+    report = body_contacts(body, trousers)
+    if any(report.values()) or not trousers.is_volume:
+        raise ValueError(f"Pantalón rechazado. Contactos {report['contacts']}, vértices interiores {report['inside']}.")
+    return {"prenda-pantalon": apply_material(trousers, color, projection="cylindrical", roughness=.83)}
+
+
+def fit_fingerless_gloves(body, color="#49445d"):
+    """Build two fitted wrist and palm shells with the fingers exposed."""
+    from aethryx_rig import humanoid_skeleton
+
+    if not body.is_volume:
+        raise ValueError("Los guantes requieren un cuerpo cerrado y orientado.")
+    names, _, joints = humanoid_skeleton(body)
+    height = body.extents[1]
+    centers = body.triangles_center
+    pieces = {}
+    for side, sign, label in (("Left", 1, "izquierdo"), ("Right", -1, "derecho")):
+        wrist, elbow = (joints[names.index(side + joint)] for joint in ("Hand", "LowerArm"))
+        forearm = wrist - elbow
+        delta = centers - wrist
+        along = delta @ forearm / (forearm @ forearm)
+        selected = (along > -.13) & (along < .27) & (sign * delta[:, 0] > -.045 * height)
+        glove = _shell(body, selected, .002 * height, .0011 * height)
+        report = body_contacts(body, glove)
+        if any(report.values()) or not glove.is_volume:
+            raise ValueError(f"Guante {label} rechazado. Contactos {report['contacts']}, vértices interiores {report['inside']}.")
+        pieces[f"prenda-guante-{label}"] = apply_material(glove, color, projection="cylindrical", roughness=.8)
     return pieces
 
 
@@ -859,13 +931,14 @@ class ModularAvatar:
     def export_piece(self, node, path):
         write_new_glb(trimesh.Scene({node: self.get(node, world=True)}), path)
 
-    def export_outfit(self, path):
-        pieces = {node: self.get(node, world=True) for node in self.nodes if node.startswith("prenda-")}
+    def export_outfit(self, path, *, visible_only=False):
+        pieces = {node: self.get(node, world=True) for node in self.nodes
+                  if node.startswith("prenda-") and (not visible_only or node not in self.hidden)}
         if not pieces:
             raise ValueError("Genera al menos una prenda para guardar el conjunto.")
         write_new_glb(trimesh.Scene(pieces), path)
 
-    def apply_outfit(self, path):
+    def apply_outfit(self, path, *, switch=False):
         incoming = ModularAvatar(trimesh.load(path, force="scene", process=False))
         if not incoming.nodes or not all(node.startswith("prenda-") for node in incoming.nodes):
             raise ValueError("El GLB del conjunto debe contener solamente nodos prenda-.")
@@ -875,7 +948,13 @@ class ModularAvatar:
             if node in working.nodes:
                 mesh.apply_transform(np.linalg.inv(working.scene.graph[node][0]))
             working.upsert(node, mesh)
+        if switch:
+            incoming_nodes = set(incoming.nodes)
+            working.hidden.update(node for node in working.nodes
+                                  if node.startswith("prenda-") and node not in incoming_nodes)
+            working.hidden.difference_update(incoming_nodes)
         self.scene = working.scene
+        self.hidden = working.hidden
 
 
 def write_new_glb(scene, path):

@@ -16,12 +16,12 @@ from aethryx_anime import hair_locks, layered_hair, nikix_preset, sculpted_body,
 from aethryx_bridge import inspect_avatar_glb
 from aethryx_materials import (CHANNELS, RESOLUTIONS, color_gradient, save_pbr_maps, transform_uv,
                               unwrap_uv, update_pbr_maps, uv_quality)
-from aethryx_rig import EXPORT_PROFILES, export_rigged_avatar, preview_expression, preview_pose
+from aethryx_rig import EXPORT_PROFILES, component_pose_contacts, export_rigged_avatar, preview_expression, preview_pose
 from pose_dialog import PoseDialog
 from aethryx_modular import (
     BODY, BODY_PREVIEW_BANDS, EYES, FACE_CONTROLS, ModularAvatar, anime_body, apply_material, avatar_eye,
-    body_contacts, facial_vertices, fit_component_to_patch, fit_footwear, fit_garment_with_clearance,
-    fit_hair, fit_sleeves, fitted_eyelids, head_frame, review_generated_hair,
+    facial_vertices, fit_component_to_patch, fit_fingerless_gloves, fit_footwear, fit_garment_with_clearance,
+    fit_hair, fit_sleeves, fit_trousers, fitted_eyelids, generated_hair_passes_review, head_frame, review_generated_hair,
     mouth_components, recolor_iris, regional_hair, write_new_glb,
 )
 
@@ -48,8 +48,8 @@ class ComponentDialog(tk.Toplevel):
             (("Añadir GLB/OBJ…", self.add), ("Sustituir…", self.replace),
              ("Quitar", self.remove), ("Ocultar / mostrar", self.visibility), ("Guardar pieza…", self.save_piece)),
             (("Crear cuerpo anime", self.create_body), ("Rostro…", self.face), ("Crear ojos", self.eyes),
-             ("Cabello…", self.hair), ("Prenda superior…", self.clothing)),
-            (("Color / iris…", self.material), ("UV y textura…", self.texture), ("Comprobar ajuste", self.contacts),
+             ("Cabello…", self.hair), ("Prendas…", self.clothing)),
+            (("Color / iris…", self.material), ("UV y textura…", self.texture), ("Comprobar en poses", self.contacts),
              ("Degradado por pieza…", self.gradient), ("Calzado…", self.footwear)),
             (("Perfil anime…", self.create_profile), ("Párpados", self.eyelids), ("Interior bucal", self.mouth),
              ("Cabello por regiones…", self.hair_regions), ("Ocultar región corporal…", self.toggle_body_band)),
@@ -178,13 +178,15 @@ class ComponentDialog(tk.Toplevel):
             fit = review_generated_hair if target.startswith(("cabello", "hair")) else fit_component_to_patch
             candidate, report = fit(self._body(), self.avatar.get(target, world=True), load_body_template(Path(path)))
             self.avatar.add(node, candidate)
-            if any(report.values()) or not candidate.is_volume:
+            review = candidate.metadata.get("aethryx_hair_review")
+            if any(report.values()) or not candidate.is_volume or (review and not generated_hair_passes_review(review)):
                 self.avatar.hidden.add(node)
                 status = "Borrador oculto para revisión."
             else:
                 status = "Ajuste preliminar sin contactos detectados."
-            review = candidate.metadata.get("aethryx_hair_review")
             boundary = f" Bordes abiertos {review['boundary_edges']}." if review else ""
+            if review and review["crown_coverage_after"] is not None:
+                boundary += f" Cobertura de coronilla {review['crown_coverage_after']:.0%}."
             return f"{status} Contactos {report['contacts']}, vértices dentro {report['inside']}.{boundary}"
 
         self._edit_background(align, node)
@@ -401,15 +403,23 @@ class ComponentDialog(tk.Toplevel):
             self._edit(lambda: self._new_fitted("cabello", fit_hair(self._body(), *values)), "cabello")
 
     def clothing(self):
-        style = simpledialog.askstring("Estilo de prenda", "Elige top, falda, vestido o mangas.", initialvalue="top", parent=self)
+        style = simpledialog.askstring("Estilo de prenda", "Elige top, falda, vestido, mangas, pantalón o guantes.",
+                                       initialvalue="top", parent=self)
         if style is None:
             return
         style = style.strip().lower()
-        if style == "mangas":
-            def generate_sleeves():
-                self._group(fit_sleeves(self._body()))
-                return "Mangas independientes validadas en reposo sin contactos ni vértices interiores."
-            self._edit_background(generate_sleeves, "prenda-manga-izquierda")
+        generators = {"mangas": (fit_sleeves, "prenda-manga-izquierda"),
+                      "pantalón": (fit_trousers, "prenda-pantalon"),
+                      "pantalon": (fit_trousers, "prenda-pantalon"),
+                      "guantes": (fit_fingerless_gloves, "prenda-guante-izquierdo")}
+        if style in generators:
+            fit, name = generators[style]
+
+            def generate_pieces():
+                self._group(fit(self._body()))
+                return "Prenda validada en reposo. Usa Comprobar en poses para revisar la deformación."
+
+            self._edit_background(generate_pieces, name)
             return
         values = self._numbers(
             "Prenda superior", "Holgura 0,003–0,06 y espesor 0,001–0,03 de la altura.", "0.012 0.006", 2,
@@ -456,7 +466,7 @@ class ComponentDialog(tk.Toplevel):
         path = self._save_path("Guardar conjunto de prendas", "conjunto")
         if path:
             try:
-                self.avatar.export_outfit(path)
+                self.avatar.export_outfit(path, visible_only=True)
                 self.status.set(f"Conjunto guardado en {path}")
             except Exception as exc:
                 messagebox.showerror("Guardar conjunto", str(exc), parent=self)
@@ -542,7 +552,7 @@ class ComponentDialog(tk.Toplevel):
     def load_outfit(self):
         path = filedialog.askopenfilename(parent=self, filetypes=[("Conjunto GLB", "*.glb")])
         if path:
-            self._edit(lambda: self.avatar.apply_outfit(path))
+            self._edit(lambda: self.avatar.apply_outfit(path, switch=True))
 
     def diagnose_uv(self):
         node = self._selected()
@@ -652,12 +662,14 @@ class ComponentDialog(tk.Toplevel):
         node = self._selected()
         if not node or node == BODY:
             return
-        try:
-            report = body_contacts(self._body(), self.avatar.get(node, world=True))
-            inside = report["inside"] if report["inside"] is not None else "indeterminado"
-            self.status.set(f"Contactos con el cuerpo {report['contacts']} · Vértices dentro {inside}.")
-        except Exception as exc:
-            messagebox.showerror("Comprobar ajuste", str(exc), parent=self)
+
+        def check():
+            return " · ".join(
+                f"{pose}: {report['contacts']} contactos, {report['inside']} dentro"
+                for pose, report in component_pose_contacts(self.avatar.scene, node).items()
+            )
+
+        self._edit_background(check, node, updates_scene=False)
 
     def material(self):
         node = self._selected()

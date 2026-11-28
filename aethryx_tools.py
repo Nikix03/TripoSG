@@ -195,6 +195,11 @@ def inspect_component_geometry(path):
 
 
 TOOL_REGISTRY = {
+    "get_component_job_counts": ToolDefinition(
+        "get_component_job_counts",
+        "Cuenta los trabajos de generación por estado sin exponer rutas ni referencias.",
+        {}, ("read",), True, True,
+    ),
     "inspect_component_geometry": ToolDefinition(
         "inspect_component_geometry",
         "Mide caras degeneradas, bordes abiertos y cierre de cada pieza guardada.",
@@ -299,6 +304,11 @@ def execute_tool(name, inputs, project_context=None, write_allowed=False):
             return analyze_project_diagnostics(context)
         if name == "get_avatar_scene_graph":
             return get_avatar_scene_graph(context)
+        if name == "get_component_job_counts":
+            counts = context.get("component_job_counts")
+            if isinstance(counts, dict):
+                return {"status": "available", "counts": counts}
+            return {"status": "unavailable", "reason": "La cola local aún no está disponible."}
     if name == "list_scene_nodes":
         return list_scene_nodes(inputs.get("model_path", ""))
     if name == "get_mesh_statistics":

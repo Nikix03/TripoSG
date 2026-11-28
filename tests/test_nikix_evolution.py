@@ -7,16 +7,57 @@ import numpy as np
 import trimesh
 
 from aethryx_anime import layered_hair, nikix_preset, sculpted_body
-from aethryx_anatomy import semantic_visual_hull
+from aethryx_anatomy import load_body_template, semantic_visual_hull
 from aethryx_materials import unwrap_uv, uv_quality
 from aethryx_modular import (BODY, _repair_hair_seams, body_contacts, fit_component_to_patch,
-                           refine_component_fit, review_generated_hair)
-from aethryx_rig import PosePreview, demo_rotations, profile_parts
+                           fit_fingerless_gloves, fit_trousers,
+                           generated_hair_passes_review, refine_component_fit,
+                           remove_nonmanifold_flaps, review_generated_hair)
+from aethryx_rig import PosePreview, component_pose_contacts, demo_rotations, profile_parts
+from aethryx_profiles import BUNDLED_BODY
 from studio_project import generation_recovery_path, load_project, save_project
 from aethryx_tools import execute_tool
 
 
 class NikixEvolutionTests(unittest.TestCase):
+    def test_trousers_and_fingerless_gloves_fit_v6_in_three_poses(self):
+        body = sculpted_body("Anime femenino", refined=True, facial_loops=True)
+        pieces = {**fit_trousers(body), **fit_fingerless_gloves(body)}
+        self.assertEqual(set(pieces), {"prenda-pantalon", "prenda-guante-izquierdo", "prenda-guante-derecho"})
+        scene = trimesh.Scene({BODY: body, **pieces})
+        for name, piece in pieces.items():
+            with self.subTest(piece=name):
+                self.assertTrue(piece.is_volume)
+                self.assertEqual(list(component_pose_contacts(scene, name).values()),
+                                 [{"contacts": 0, "inside": 0}] * 3)
+
+    def test_layered_hair_uses_head_bounds_on_an_unstyled_template(self):
+        body = load_body_template(BUNDLED_BODY)
+        self.assertNotIn("aethryx_eye_guide", body.metadata)
+        hair = layered_hair(body, ribbons=False, length=.5)
+        self.assertEqual(len(hair), 21)
+        self.assertTrue(all(piece.is_volume for piece in hair.values()))
+        self.assertNotIn("aethryx_eye_guide", body.metadata)
+
+    def test_nonmanifold_flap_cleanup_preserves_uv_and_source(self):
+        sphere = trimesh.creation.icosphere(subdivisions=1)
+        vertices = np.vstack((sphere.vertices, [5, 5, 5]))
+        faces = np.vstack((sphere.faces, [*sphere.faces[0, :2], len(vertices) - 1]))
+        uv = np.linspace(0, 1, len(vertices) * 2).reshape(-1, 2)
+        mesh = trimesh.Trimesh(vertices, faces, visual=trimesh.visual.TextureVisuals(uv=uv), process=False)
+        result, removed = remove_nonmanifold_flaps(mesh)
+        self.assertEqual(removed, 1)
+        self.assertTrue(result.is_volume)
+        np.testing.assert_array_equal(result.visual.uv, uv[:-1])
+        np.testing.assert_array_equal(mesh.faces, faces)
+
+    def test_collision_free_hair_still_needs_scalp_and_silhouette_coverage(self):
+        review = {"closed_volume": True, "contacts": 0, "inside": 0, "crown_coverage_after": .72,
+                  "guide_after": {"front": .45, "side": .41, "top": .35}}
+        self.assertTrue(generated_hair_passes_review(review))
+        self.assertFalse(generated_hair_passes_review({**review, "crown_coverage_after": .22}))
+        self.assertFalse(generated_hair_passes_review({**review, "guide_after": {"front": .02}}))
+
     def test_layered_hair_length_and_colors_are_reusable(self):
         body = sculpted_body("Anime masculino", refined=True, facial_loops=True)
         short = layered_hair(body, length=.25, root="#223344", tips=("#aabbcc", "#aa6600"))

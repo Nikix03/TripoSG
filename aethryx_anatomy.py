@@ -150,10 +150,25 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
             raise ValueError("Las proporciones produjeron caras inválidas.")
     if deformation_report is not None:
         deformation_report.update(validate_deformation(original, mesh))
+        observed_colors = {}
+        for label in ("hair", "clothing"):
+            if label not in data.get("palette", {}):
+                continue
+            color = data["palette"][label]
+            samples = []
+            for mask, rgb in zip(masks, reference_colors):
+                if mask is not None:
+                    pixels = rgb[np.all(mask == color, axis=2)]
+                    if len(pixels) >= 32:
+                        samples.append(np.median(pixels, axis=0))
+            if samples:
+                value = np.rint(np.median(samples, axis=0)).astype(int)
+                observed_colors[label] = "#%02x%02x%02x" % tuple(value)
         deformation_report["reference_evidence"] = {
             "observed_views": names, "missing_views": [name for name in VIEWS if name not in names],
             "anchor_rank": ranks, "inferred_anchor_depths": sum(rank < 3 for rank in ranks.values()),
             "surface_model": "deformed_template",
+            "visible_regional_colors": observed_colors,
         }
     return mesh, patches, errors
 
@@ -337,21 +352,29 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
         modular = None
         components = [{"name": "cuerpo-base", "role": "body", "file": body.name}]
         if data.get("export_hybrid") is True:
-            from aethryx_modular import EYES, avatar_eye, fit_garment_with_clearance, fitted_eyelids, regional_hair
+            from aethryx_modular import (
+                EYES, apply_material, avatar_eye, fit_garment_with_clearance, fitted_eyelids, regional_hair,
+            )
 
-            pieces = {"cuerpo-base": mesh, **regional_hair(mesh)}
+            colors = report.get("reference_evidence", {}).get("visible_regional_colors", {})
+            hair_options = {"root": colors["hair"]} if "hair" in colors else {}
+            pieces = {"cuerpo-base": mesh, **regional_hair(mesh, **hair_options)}
             for eye_name, left, color in zip(EYES, (True, False), ("#6589d4", "#ae6798")):
                 eye = avatar_eye(mesh, left, color)
                 pieces[eye_name] = eye
                 for lid, part in fitted_eyelids(eye).items():
                     pieces[f"{eye_name}-parpado-{lid}"] = part
-            pieces["ropa-camiseta"], clearance = fit_garment_with_clearance(mesh, .016, .006, "top")
+            shirt, clearance = fit_garment_with_clearance(mesh, .016, .006, "top")
+            if "clothing" in colors:
+                shirt = apply_material(shirt, colors["clothing"], projection="cylindrical", roughness=.8)
+            pieces["prenda-camiseta"] = shirt
             hybrid = trimesh.Scene(pieces)
             hybrid.export(output / "avatar-modular.glb", file_type="glb")
             components.append({"name": "avatar-modular", "role": "modular-avatar", "file": "avatar-modular.glb"})
             report = {**report, "hybrid_evidence": {
                 "body": "deformed_template", "procedural_parts": sorted(set(pieces) - {"cuerpo-base"}),
                 "shirt_rest_clearance_height_fraction": clearance,
+                "transferred_base_colors": colors,
             }}
         else:
             hybrid = None

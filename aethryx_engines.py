@@ -47,7 +47,8 @@ def engine_catalog():
         EngineCapabilities(
             "triposr", "TripoSR / alternativa monovista",
             "MIT de código y pesos según model card",
-            "COMPILACIÓN WINDOWS PENDIENTE", True, False, False, False, True, False, "1.0",
+            "CLI CUDA experimental; requiere código, pesos y configuraciones locales",
+            True, False, False, False, True, False, "1.0",
         ),
     ]
 
@@ -535,6 +536,15 @@ def prepare_character_alpha(source, output_path):
     output_path = Path(output_path).expanduser().resolve()
     if not source.is_file():
         return {"status": "unavailable", "reason": "Imagen de referencia no encontrada"}
+    if source == output_path:
+        raise ValueError("La máscara de trabajo debe guardarse aparte de la referencia.")
+    with Image.open(source) as pil_image:
+        rgba = pil_image.convert("RGBA")
+        if rgba.getchannel("A").getextrema() == (0, 255):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            rgba.save(output_path, format="PNG")
+            return {"status": "available", "path": str(output_path), "provider": "máscara alfa existente"}
+        rgb = rgba.convert("RGB")
     model_path = os.environ.get("AETHRYX_SEMANTIC_SEGMENTATION_MODEL", "")
     labels_text = os.environ.get("AETHRYX_SEMANTIC_SEGMENTATION_LABELS", "")
     if not model_path or not labels_text:
@@ -542,9 +552,7 @@ def prepare_character_alpha(source, output_path):
         labels_text = "background,character"
     os.environ["AETHRYX_SEMANTIC_SEGMENTATION_MODEL"] = model_path
     os.environ["AETHRYX_SEMANTIC_SEGMENTATION_LABELS"] = labels_text
-    with Image.open(source) as pil_image:
-        rgb = pil_image.convert("RGB")
-        width, height = rgb.size
+    width, height = rgb.size
     regions, reason = _onnx_segmentation_regions(source, width, height)
     character = next(
         (region for region in regions if region.get("view") == "other"),

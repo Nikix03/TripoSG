@@ -111,6 +111,17 @@ def build_adaptive_plan(hardware=None, engine_id="triposg"):
     target = closest_profile_target(hardware.vram_gib)
     basic_edit = hardware.ram_gib > 0 and hardware.ram_gib < 8
 
+    if engine_id == "triposr":
+        enabled = hardware.vram_gib is not None and not basic_edit
+        return AdaptivePlan(
+            profile=EngineProfile(target, "fp32", "none", False, False, False,
+                                  enabled, basic_edit, True),
+            hardware=hardware,
+            reason=("TripoSR ejecuta el modelo en CUDA y extrae la superficie en CPU."
+                    if enabled else "TripoSR requiere CUDA y un perfil fuera de edición básica."),
+            oom_recovery=("terminate-worker", "lower-marching-cubes-resolution"),
+        )
+
     quantization = "none"
     if engine_id != "triposg":
         quantization = "engine-dependent"

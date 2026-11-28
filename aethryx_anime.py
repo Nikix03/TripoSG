@@ -7,7 +7,7 @@ import trimesh
 
 from aethryx_materials import color_gradient
 from aethryx_modular import (BODY, EYES, _iris, anime_body, apply_material, fit_garment_with_clearance,
-                           fit_hair, fitted_eyelids, fit_footwear)
+                           fit_hair, fitted_eyelids, fit_footwear, head_frame)
 
 
 def _neck_loop(mesh):
@@ -206,7 +206,13 @@ def layered_hair(body, *, ribbons=True, length=.60, root=None, tips=None):
     if not 0 <= length <= 1:
         raise ValueError("La longitud del cabello debe estar entre 0 y 1.")
     height = body.extents[1]
-    cx, _, cz, _ = body.metadata["aethryx_eye_guide"]
+    guide = body.metadata.get("aethryx_eye_guide")
+    if guide is None:
+        low, high = head_frame(body)
+        cx = (low[0] + high[0]) / 2
+        cz = high[2] - .15 * (high[2] - low[2])
+    else:
+        cx, _, cz, _ = guide
     crown = body.bounds[1, 1]
     root = root or ("#efb94f" if ribbons else "#e8b86c")
     tips = tips or (("#ff508f", "#32c6f5") if ribbons else ("#f19abc", "#8ccee9"))

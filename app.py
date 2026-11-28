@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,8 @@ from anatomy_dialog import AnatomyDialog
 from aethryx_modular import BODY, visible_body_faces
 from modular_dialog import ComponentDialog
 from kiria_dialog import KiriaDialog
+from aethryx_jobs import ComponentJobs
+from jobs_dialog import JobsDialog
 from studio_project import (
     validate_settings, validate_glb, save_project, load_project, newer_recovery, recovery_path,
     unsaved_recovery_directory, unsaved_recovery_path,
@@ -95,6 +98,9 @@ class AethryxStudio(tk.Tk):
         self.avatar_nodes = build_avatar_scene_graph()
         self.generation_active = False
         self.generation_recovery = None
+        self.component_jobs = None
+        self.jobs_dialog = None
+        self.active_component_job = None
         self.model_loading = False
         self.scene_history = []
         self.scene_future = []
@@ -198,6 +204,7 @@ class AethryxStudio(tk.Tk):
         file_menu.add_command(label="Abrir proyecto...", accelerator="Ctrl+O", command=self.open_project)
         file_menu.add_command(label="Recuperar sesión sin guardar…", command=self.recover_unsaved_session)
         file_menu.add_command(label="Recuperar generación TripoSG…", command=self.recover_generation)
+        file_menu.add_command(label="Cola de componentes TripoSG…", command=self.open_component_jobs)
         file_menu.add_command(label="Guardar proyecto", accelerator="Ctrl+S", command=self.save_current_project)
         file_menu.add_command(label="Guardar proyecto como...", command=lambda: self.save_current_project(True))
         file_menu.add_separator()
@@ -701,7 +708,7 @@ class AethryxStudio(tk.Tk):
     def reconstruct_anatomy(self):
         if not self._workspace_available():
             return
-        dialog = AnatomyDialog(self)
+        dialog = AnatomyDialog(self, self.reference_regions)
         if self.anatomy_setup:
             try:
                 dialog.load_setup(self.anatomy_setup)
@@ -1253,6 +1260,16 @@ class AethryxStudio(tk.Tk):
 
     def _kiria_context(self):
         hidden_components = set(self._hidden_component_nodes())
+        queue = None
+        jobs_path = generation_recovery_directory() / "components.sqlite3"
+        if jobs_path.is_file():
+            try:
+                queue = {}
+                for row in ComponentJobs(jobs_path).entries():
+                    state = row["status"]
+                    queue[state] = queue.get(state, 0) + 1
+            except (OSError, sqlite3.Error):
+                queue = None
         return {
             "project_id": self.project_path or "unsaved-project",
             "revision": "1",
@@ -1260,6 +1277,7 @@ class AethryxStudio(tk.Tk):
             "mesh_stats": self.model_stats,
             "model": self.current_model_path,
             "image": self.image_path.get(),
+            "component_job_counts": queue,
             "scene_components": [
                 {
                     "node": str(part["node"]),
@@ -1743,6 +1761,53 @@ class AethryxStudio(tk.Tk):
         self.log.configure(state="disabled")
         self.log_line_count = 0
 
+    def open_component_jobs(self):
+        if self.jobs_dialog and self.jobs_dialog.winfo_exists():
+            self.jobs_dialog.lift()
+            return
+        try:
+            self.component_jobs = ComponentJobs(generation_recovery_directory() / "components.sqlite3")
+            self.jobs_dialog = JobsDialog(self, self.component_jobs)
+        except (OSError, sqlite3.Error) as exc:
+            messagebox.showerror("Cola de componentes", str(exc))
+
+    def component_job_parameters(self):
+        settings = {key: getattr(self, key).get() for key in ("steps", "faces", "seed", "guidance")}
+        validate_settings(**settings)
+        image = self.image_path.get().strip()
+        actual, _ = generation_reference(self.reference_regions, image)
+        output = self.output_path.get().strip()
+        if not Path(actual).is_file() or Path(output).suffix.lower() != ".glb":
+            raise ValueError("Selecciona una referencia existente y una ruta de salida GLB.")
+        return {"image": os.path.abspath(image or actual), "output": os.path.abspath(output),
+                "settings": settings, "references": self.reference_regions}
+
+    def run_component_job(self, row):
+        if not self._workspace_available():
+            return
+        data = row["parameters"]
+        output = Path(data["output"])
+        self.image_path.set(data["image"])
+        self.output_path.set(str(output.with_name(
+            f"{output.stem}-{row['id'][:12]}-intento-{row['attempt'] + 1}{output.suffix}",
+        )))
+        for key, value in data["settings"].items():
+            getattr(self, key).set(value)
+        self.reference_regions = data["references"]
+        self._load_reference_preview()
+        self.generate(queued_job=row["id"])
+
+    def _finish_component_job(self, status, *, error=None, result=None):
+        identifier, self.active_component_job = self.active_component_job, None
+        if identifier is None:
+            return
+        try:
+            self.component_jobs.transition(identifier, status, error, result, expected="running")
+            if self.jobs_dialog and self.jobs_dialog.winfo_exists():
+                self.jobs_dialog.refresh()
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            self.append_log(f"No se pudo actualizar la cola de componentes. {exc}")
+
     def recover_generation(self):
         if not self._workspace_available():
             return
@@ -1779,7 +1844,7 @@ class AethryxStudio(tk.Tk):
         except OSError as exc:
             self.append_log(f"No se pudo actualizar la recuperación de TripoSG. {exc}")
 
-    def generate(self):
+    def generate(self, *, queued_job=None):
         if not self._workspace_available():
             return
         image, primary_region = generation_reference(self.reference_regions, self.image_path.get().strip())
@@ -1819,6 +1884,10 @@ class AethryxStudio(tk.Tk):
             ):
                 return
 
+        if queued_job is not None:
+            self.component_jobs.start(queued_job)
+            self.active_component_job = queued_job
+
         temporary_image = None
         input_description = image
         try:
@@ -1851,13 +1920,17 @@ class AethryxStudio(tk.Tk):
                         self.append_log(f"No se pudo eliminar el recorte temporal: {cleanup_error}")
                 messagebox.showerror("No se pudo preparar el recorte", str(exc))
                 self._finish_generation_record("failed")
+                self._finish_component_job("failed", error=str(exc))
                 return
             image = temporary_image
         alpha_path = os.path.join(
             os.path.dirname(output),
             f".aethryx-alpha-{os.path.splitext(os.path.basename(output))[0]}.png",
         )
-        alpha_result = prepare_character_alpha(image, alpha_path)
+        try:
+            alpha_result = prepare_character_alpha(image, alpha_path)
+        except (OSError, ValueError) as exc:
+            alpha_result = {"status": "unavailable", "reason": str(exc)}
         if alpha_result["status"] == "available":
             if temporary_image and os.path.exists(temporary_image):
                 try:
@@ -1866,10 +1939,7 @@ class AethryxStudio(tk.Tk):
                     pass
             temporary_image = alpha_path
             image = alpha_path
-            self.append_log(
-                "ISNet: eliminacion de fondo local aplicada; "
-                f"{alpha_result['provider']}."
-            )
+            self.append_log(f"Primer plano preparado. Fuente de la máscara: {alpha_result['provider']}.")
         else:
             reason = alpha_result["reason"]
             self.append_log("ISNet: fondo no preparado; " + reason)
@@ -1886,6 +1956,7 @@ class AethryxStudio(tk.Tk):
                     pass
             self.status.set("Generacion cancelada: canal alfa ISNet no disponible.")
             self._finish_generation_record("failed")
+            self._finish_component_job("failed", error=reason)
             return
 
         self.generation_active = True
@@ -2020,7 +2091,9 @@ class AethryxStudio(tk.Tk):
                 self.after(0, deliver_result)
 
     def _generation_finished(self, output):
+        queued = self.active_component_job is not None
         self._finish_generation_record("complete")
+        self._finish_component_job("complete", result=output)
         self.generation_active = False
         self.progress.stop()
         self.progress.configure(mode="determinate", value=100)
@@ -2028,10 +2101,12 @@ class AethryxStudio(tk.Tk):
         self.cancel_button.state(["disabled"])
         self.status.set(f"Generacion completada: {output}")
         self.append_log(f"Modelo guardado: {output}")
-        self.load_model(output)
+        if not queued:
+            self.load_model(output)
 
     def _generation_cancelled(self):
         self._finish_generation_record("cancelled")
+        self._finish_component_job("cancelled")
         self.generation_active = False
         self.progress.stop()
         self.progress.configure(mode="determinate", value=0)
@@ -2042,6 +2117,7 @@ class AethryxStudio(tk.Tk):
 
     def _generation_failed(self, error):
         self._finish_generation_record("failed")
+        self._finish_component_job("failed", error=error)
         self.generation_active = False
         self.progress.stop()
         self.progress.configure(mode="determinate", value=0)

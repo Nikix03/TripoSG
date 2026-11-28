@@ -1,5 +1,16 @@
 # Estado de AETHRYX Studio
 
+## 28 de noviembre de 2026 · Breakthrough · Motores, vestuario y cola
+
+- Pasaron las 111 pruebas de Studio con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
+- TripoSR ejecutó un ensayo local real en la RTX 5070 con dos configuraciones públicas, pesos locales y un extractor CPU en el proceso aislado. La vista frontal revisada produjo un volumen de 10.424 caras y 5.214 vértices. Su IoU frontal fue 87,51 % con la máscara original y 88,01 % con la revisada, usando el mismo protocolo aplicado a Genesis y TripoSG. La revisión lateral y posterior muestra superficies irregulares, poco detalle facial y geometría sin separar. Sigue como referencia monovista. El lanzador está en `scripts/inference_triposr.py` y usa su perfil Adaptive Engine.
+- La limpieza puede retirar aletas no manifold aisladas conservando UV y geometría original. El ajuste capilar comprueba también la silueta y la coronilla. TripoSR produjo un candidato cerrado y sin contactos, con 22,51 % de cobertura de coronilla y 1,99 % de coincidencia frontal con la guía. El candidato de TripoSG de la cola quedó abierto y con 1.979 contactos. Ambos quedan como borradores.
+- Genesis acepta paneles confirmados desde el editor de hojas y transfiere al avatar colores medianos visibles de cabello y ropa cuando hay máscaras semánticas aceptadas. El peinado por capas también funciona sobre una plantilla ajustada sin guía facial propia. El ensayo frontal de Genesis publicado anteriormente usó materiales procedurales.
+- El vestuario añade pantalón ceñido y guantes sin dedos. En V6 las tres piezas registraron cero contactos y vértices interiores en reposo, demostración y brazos elevados. Los conjuntos guardan prendas visibles y al cargar un conjunto se ocultan las otras prendas de Studio. Se mantienen disponibles para edición. La camiseta del prototipo Genesis pasó las mismas tres poses.
+- La nueva consolidación de Unity trabaja sobre una copia y conserva múltiples pesos por vértice. Puede agrupar cabello, orejas y zapatos compatibles. Compiló con Roslyn y las referencias de Unity 2022.3.22f1. El proyecto temporal con VRChat SDK 3.10.6 no arrancó en batch por falta de licencia activa del editor. La reducción real y la clasificación quedan sin verificar.
+- **Cola de componentes TripoSG** guarda parámetros, errores, intentos y aceptación o rechazo en SQLite local. Un trabajo se ejecuta a la vez y cada intento tiene una salida distinta. La cola preserva el canal alfa del recorte. KIRIA puede consultar recuentos por estado. La prueba real con cabello, 8 pasos, semilla 42 y límite de 16.000 caras terminó en 102,93 s, con pico PyTorch de 6.268,1 MiB asignados. La salida quedó pendiente de revisión y después se rechazó en el ensayo de ajuste.
+- Quedan pendientes el ajuste multivista con poses reconciliadas, cabello generativo listo para integrar, mejoras detalladas de cara y extremidades, validación SDK en PC y móvil, guantes con dedos y menú de vestuario de VRChat. No hubo ejecución de Ollama ni de Stable Fast 3D en este bloque.
+
 ## 27 de noviembre de 2026 · Genesis Breakthrough
 
 - Partida limpia en `9b73da2`. Pasaron 103 pruebas con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
