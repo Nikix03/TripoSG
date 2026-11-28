@@ -201,7 +201,7 @@ def sculpted_face_parts(body, colors=("#6589d4", "#ae6798")):
     return parts
 
 
-def layered_hair(body, *, ribbons=True, length=.60, root=None, tips=None):
+def layered_hair(body, *, ribbons=True, length=.60, root=None, tips=None, follow_scalp=False):
     """Original swept locks with separate textures and UVs following their lengths."""
     if not 0 <= length <= 1:
         raise ValueError("La longitud del cabello debe estar entre 0 y 1.")
@@ -218,6 +218,13 @@ def layered_hair(body, *, ribbons=True, length=.60, root=None, tips=None):
     tips = tips or (("#ff508f", "#32c6f5") if ribbons else ("#f19abc", "#8ccee9"))
     cap_length = (.58 if ribbons else .36) * (.5 + length / 1.2)
     parts = {"cabello-fondo": fit_hair(body, length=cap_length, volume=.022, color=root)}
+    root_guide = None
+    if follow_scalp:
+        cap = parts["cabello-fondo"]
+        exterior = cap.vertices[:len(cap.vertices) // 2]
+        scalp = exterior[exterior[:, 1] >= crown - .055 * height]
+        if len(scalp):
+            root_guide = cKDTree(scalp)
     t = np.linspace(0., 1., 36)
     for index, angle in enumerate(np.linspace(-np.pi, np.pi, 20, endpoint=False)):
         front = np.cos(angle) > .48
@@ -242,7 +249,13 @@ def layered_hair(body, *, ribbons=True, length=.60, root=None, tips=None):
             width = height * (.003 + .020 * np.sin(np.pi * t)**.72) * (1 - .94 * t**5)
             radii = np.column_stack((width, width * (.26 if front else .20)))
             sides = 14
-        mesh = _sweep(np.column_stack((x, y, z)), radii, sides=sides)
+        curve = np.column_stack((x, y, z))
+        if root_guide is not None:
+            vertex = root_guide.query(curve[0])[1]
+            displacement = root_guide.data[vertex] - curve[0]
+            influence = np.clip(1 - t / .25, 0, 1) ** 2
+            curve += influence[:, None] * displacement
+        mesh = _sweep(curve, radii, sides=sides)
         mesh = apply_material(mesh, "#ffffff", projection="cylindrical",
                               roughness=.66, image=color_gradient(root, tip))
         v = np.r_[np.repeat(1 - t, sides), 1., 0.]

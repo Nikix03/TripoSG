@@ -27,7 +27,7 @@ from aethryx_modular import (
 
 
 class ComponentDialog(tk.Toplevel):
-    def __init__(self, master, scene, hidden):
+    def __init__(self, master, scene, hidden, *, candidate=None):
         super().__init__(master)
         self.title("Genesis · Componentes del avatar")
         self.geometry("1040x650")
@@ -36,12 +36,14 @@ class ComponentDialog(tk.Toplevel):
         self.grab_set()
         self.result = None
         self.avatar = ModularAvatar(scene, hidden)
+        self.candidate = candidate
         self.edited = False
         self.visibility_changed = False
         self.busy = False
         self.buttons = []
         self.protocol("WM_DELETE_WINDOW", self.close)
-        self.status = tk.StringVar(value="Selecciona una pieza para editarla o crea un cuerpo anime.")
+        self.status = tk.StringVar(value=("Selecciona una guía y pulsa Ajustar malla a pieza."
+                                         if candidate else "Selecciona una pieza para editarla o crea un cuerpo anime."))
         actions = ttk.Frame(self, padding=10)
         actions.pack(fill="x")
         for row, buttons in enumerate((
@@ -169,7 +171,8 @@ class ComponentDialog(tk.Toplevel):
         if not target or target == BODY:
             self.status.set("Selecciona el parche o componente que servirá de guía.")
             return
-        path = self._piece_path()
+        pending = self.candidate
+        path = pending["path"] if pending else self._piece_path()
         if not path:
             return
         node = f"{target}-ajuste"
@@ -177,6 +180,11 @@ class ComponentDialog(tk.Toplevel):
         def align():
             fit = review_generated_hair if target.startswith(("cabello", "hair")) else fit_component_to_patch
             candidate, report = fit(self._body(), self.avatar.get(target, world=True), load_body_template(Path(path)))
+            if pending:
+                candidate.metadata["aethryx_provenance"] = {
+                    "source": "generated", "engine": pending["engine"],
+                    "job": pending["job"], "attempt": pending["attempt"], "guide": target,
+                }
             self.avatar.add(node, candidate)
             review = candidate.metadata.get("aethryx_hair_review")
             if any(report.values()) or not candidate.is_volume or (review and not generated_hair_passes_review(review)):
@@ -263,7 +271,7 @@ class ComponentDialog(tk.Toplevel):
             colors.append(color)
 
         def generate():
-            pieces = layered_hair(self._body(), length=length, root=colors[0], tips=colors[1:])
+            pieces = layered_hair(self._body(), length=length, root=colors[0], tips=colors[1:], follow_scalp=True)
             old = {name for name in self.avatar.nodes if name.startswith("cabello")}
             self._group(pieces, old - pieces.keys())
             return "Peinado por capas creado en piezas independientes."
@@ -408,9 +416,17 @@ class ComponentDialog(tk.Toplevel):
         if style is None:
             return
         style = style.strip().lower()
+        if style in {"pantalon", "pantalón"}:
+            values = self._numbers("Pantalón", "Altura de cintura, altura de puño y holgura relativas al cuerpo.",
+                                   "0.56 0.09 0.002", 3)
+            if values is not None:
+                waist, cuff, clearance = values
+                def generate_trousers():
+                    self._group(fit_trousers(self._body(), waist=waist, cuff=cuff, clearance=clearance))
+                    return "Pantalón validado en reposo."
+                self._edit_background(generate_trousers, "prenda-pantalon")
+            return
         generators = {"mangas": (fit_sleeves, "prenda-manga-izquierda"),
-                      "pantalón": (fit_trousers, "prenda-pantalon"),
-                      "pantalon": (fit_trousers, "prenda-pantalon"),
                       "guantes": (fit_fingerless_gloves, "prenda-guante-izquierdo")}
         if style in generators:
             fit, name = generators[style]

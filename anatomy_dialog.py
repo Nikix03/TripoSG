@@ -71,6 +71,7 @@ class AnatomyDialog(tk.Toplevel):
         self.export_hybrid = tk.BooleanVar(value=False)
         self.infer_occlusion_depth = tk.BooleanVar(value=False)
         self.side_horizontal_only = tk.BooleanVar(value=False)
+        self.reconcile_pose = tk.BooleanVar(value=False)
         self.segmenter = None
         self.see_through = None
         self.segment_cancel = Event()
@@ -176,6 +177,8 @@ class AnatomyDialog(tk.Toplevel):
         ttk.Checkbutton(controls, text="Exportar rig GLB", variable=self.export_rig).pack(side="left", padx=4)
         ttk.Checkbutton(controls, text="Avatar con cara, cabello y camiseta", variable=self.export_hybrid).pack(side="left", padx=4)
         ttk.Checkbutton(controls, text="Lateral solo horizontal", variable=self.side_horizontal_only,
+                        command=self._invalidate_comparison).pack(side="left", padx=4)
+        ttk.Checkbutton(controls, text="Filtrar alturas incompatibles", variable=self.reconcile_pose,
                         command=self._invalidate_comparison).pack(side="left", padx=4)
         ttk.Checkbutton(controls, text="Inferir puntos ocluidos", variable=self.infer_occlusion_depth).pack(side="left", padx=4)
         ttk.Button(controls, text="Reconstruir y validar…", command=self._fit).pack(side="right")
@@ -946,6 +949,8 @@ class AnatomyDialog(tk.Toplevel):
                 state["points"].get(vertex, (None, False))[0] or [None, None] for vertex in indices
             ]
             view["suggested"] = [vertex for vertex, (_, proposed) in state["points"].items() if proposed]
+            if self.reconcile_pose.get():
+                view["landmark_weights"] = [.6 if vertex in view["suggested"] else 1. for vertex in indices]
             view["hidden"] = [vertex for vertex, (point, _) in state["points"].items() if point is None]
             views[name] = view
         return {
@@ -956,6 +961,7 @@ class AnatomyDialog(tk.Toplevel):
             "profile": self.profile.get(),
             "bundled_template": bundled,
             "allow_inferred_depth": may_infer,
+            "reconcile_pose": self.reconcile_pose.get(),
             "export_rig": self.export_rig.get(),
             "export_hybrid": self.export_hybrid.get(),
             "smoothing": .008 if bundled else 0,
@@ -1037,6 +1043,7 @@ class AnatomyDialog(tk.Toplevel):
         self.side_manual = data.get("side_manual", "side_opposite" in data)
         self.infer_occlusion_depth.set(data.get("allow_inferred_depth") is True)
         self.side_horizontal_only.set(views["side"].get("horizontal_only") is True)
+        self.reconcile_pose.set(data.get("reconcile_pose") is True)
         self.export_rig.set(data.get("export_rig") is True)
         self.export_hybrid.set(data.get("export_hybrid") is True)
         for key, var in self.factors.items():

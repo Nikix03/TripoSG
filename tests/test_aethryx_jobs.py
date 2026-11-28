@@ -3,13 +3,48 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from PIL import Image
+from PIL import ImageDraw
+import trimesh
 
 from aethryx_engines import prepare_character_alpha
+from aethryx_generation import choose_engine, compare_candidates
 from aethryx_jobs import ComponentJobs
 from aethryx_tools import execute_tool
 
 
 class ComponentJobTests(unittest.TestCase):
+    def test_auto_falls_back_and_candidates_share_reference_framing(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.assertEqual(choose_engine("auto", {}, "python", root), "triposg")
+            with self.assertRaises(ValueError):
+                choose_engine("triposr", {}, "python", root)
+            image = Image.new("RGBA", (100, 100))
+            ImageDraw.Draw(image).rectangle((25, 25, 75, 75), fill="white")
+            mesh = trimesh.creation.box()
+            first, second = root / "first.glb", root / "second.glb"
+            mesh.export(first)
+            mesh.apply_scale(2).apply_translation([3, 2, 1])
+            mesh.export(second)
+            comparison = compare_candidates((first, second), image, "front")
+            self.assertEqual([candidate["iou"] for candidate in comparison], [1., 1.])
+            self.assertTrue(all(candidate["closed"] for candidate in comparison))
+
+    def test_cancelled_attempt_cannot_finish_a_retry(self):
+        with TemporaryDirectory() as folder:
+            jobs = ComponentJobs(Path(folder) / "queue.sqlite")
+            identifier = jobs.add("Pelo", {"engine": "triposr", "engine_options": {"resolution": 128}})
+            first = jobs.start(identifier)
+            jobs.transition(identifier, "cancelled", expected="running", attempt=first)
+            second = jobs.start(identifier)
+            with self.assertRaises(ValueError):
+                jobs.transition(identifier, "complete", result="old.glb", expected="running", attempt=first)
+            jobs.transition(identifier, "complete", result="new.glb", expected="running", attempt=second)
+            history = jobs.history(identifier)
+            self.assertEqual([(row["status"], row["result"]) for row in history],
+                             [("cancelled", None), ("complete", "new.glb")])
+            self.assertEqual(history[1]["parameters"]["engine"], "triposr")
+
     def test_queue_persists_attempts_errors_and_review(self):
         with TemporaryDirectory() as folder:
             database = Path(folder) / "components.sqlite3"

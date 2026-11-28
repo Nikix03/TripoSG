@@ -24,11 +24,17 @@ def extract_cpu_surface(level, iso):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("source", "checkpoint", "config", "dino-config", "image", "output"):
+    for name in ("source", "checkpoint", "config", "dino-config"):
         parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--image", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--probe", action="store_true")
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--resolution", type=int, default=128, choices=(96, 128, 192, 256))
     args = parser.parse_args()
-    if args.output.suffix.lower() != ".glb" or args.output.exists():
+    if not args.probe and (not args.image or not args.output):
+        parser.error("--image and --output are required")
+    if not args.probe and (args.output.suffix.lower() != ".glb" or args.output.exists()):
         parser.error("--output must be a new GLB path")
     if not (args.source / "tsr" / "system.py").is_file():
         parser.error("--source must point to the TripoSR repository")
@@ -59,11 +65,21 @@ def main():
         return str(args.dino_config.resolve(strict=True))
 
     tokenizer.hf_hub_download = local_dino_config
-    torch.manual_seed(42)
-    torch.cuda.reset_peak_memory_stats()
-    start = time.perf_counter()
     config = OmegaConf.load(args.config)
     OmegaConf.resolve(config)
+    with args.dino_config.open(encoding="utf-8") as stream:
+        json.load(stream)
+    if not args.checkpoint.is_file() or not args.checkpoint.stat().st_size:
+        parser.error("The local checkpoint is missing or empty")
+    if args.probe:
+        from skimage.measure import marching_cubes
+
+        torch.ones(1, device="cuda").sum().item()
+        print(torch.cuda.get_device_name())
+        return
+    torch.manual_seed(args.seed)
+    torch.cuda.reset_peak_memory_stats()
+    start = time.perf_counter()
     model = TSR(config)
     model.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True))
     model.renderer.set_chunk_size(8192)
@@ -86,7 +102,7 @@ def main():
     with args.output.open("xb") as destination:
         destination.write(mesh.export(file_type="glb"))
     print(json.dumps({
-        "device": torch.cuda.get_device_name(), "resolution": args.resolution, "seed": 42,
+        "device": torch.cuda.get_device_name(), "resolution": args.resolution, "seed": args.seed,
         "profile_vram_gib": plan.profile.target_vram_gib, "precision": plan.profile.dtype,
         "foreground_ratio": .85, "chunk_size": 8192, "load_seconds": loaded - start,
         "predict_seconds": predicted - loaded, "extract_and_write_seconds": time.perf_counter() - predicted,

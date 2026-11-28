@@ -41,6 +41,15 @@ class ReconstructionTests(unittest.TestCase):
             np.testing.assert_allclose(fitted.vertices, template.vertices + [0, 0, .2])
             self.assertLess(max(errors.values()), 1e-9)
             self.assertEqual(report["reference_evidence"]["reprojection_axes"], {"front": "xy", "side": "x"})
+            views["side"].pop("horizontal_only")
+            views["side"]["landmarks"][0][1] += 20
+            views["side"]["landmark_weights"] = [.5, .5, .5, .5]
+            fitted, _, _ = reconstruct_data({
+                "template": "template.ply", "vertex_indices": ids, "views": views,
+                "allow_inferred_depth": True, "reconcile_pose": True,
+            }, root, deformation_report=report)
+            np.testing.assert_allclose(fitted.vertices, template.vertices + [0, 0, .2])
+            self.assertEqual(report["reference_evidence"]["excluded_vertical_observations"], {"side": ids})
 
     def test_hybrid_export_keeps_editable_components_and_valid_rig(self):
         from aethryx_bridge import inspect_avatar_glb

@@ -1,5 +1,16 @@
 # Estado de AETHRYX Studio
 
+## 28 de noviembre de 2026 · Genesis Fusion
+
+- Pasaron las 114 pruebas de Studio con `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
+- Studio ofrece TripoSG, TripoSR y selección automática. Conserva TripoSG como preferencia inicial. El modo automático usa TripoSR cuando la sonda local de archivos, dependencias y CUDA pasa. Las rutas de los modelos y la preferencia se guardan en la configuración local. Cada inferencia se ejecuta en un proceso que libera la memoria GPU al salir.
+- TripoSR se ejecutó desde Studio en modo automático con la referencia frontal revisada, semilla 42 y rejilla 128. Completó la generación y el registro en la cola en 33,38 s. El resultado tiene 10.424 caras, 5.214 vértices y volumen cerrado. PyTorch registró un pico de 1.867,5 MiB asignados y 2.026 MiB reservados.
+- La cola guarda cada intento nuevo con sus parámetros, motor, estado, error y resultado. Una regresión verifica que la finalización tardía de un intento cancelado se rechaza después de iniciar un reintento. Se pueden comparar dos GLB con el mismo alfa y encuadre, y enviar un candidato a la guía de una región del avatar con procedencia. La selección, el ajuste y la aplicación requieren revisión manual. KIRIA puede consultar la configuración y los recuentos de trabajos.
+- Genesis admite ponderaciones por ancla y un filtro de alturas incompatibles respecto a la vista frontal. El ensayo ponderado privado exportó un avatar articulado y obtuvo 57,67 % de IoU frontal con la máscara revisada bajo el comparador de la cola. TripoSR obtuvo 88,00 % con ese protocolo. El filtro no excluyó anclas adicionales en ese ensayo concreto. La nueva regresión comprueba la exclusión con observaciones desalineadas.
+- El editor añade geometría localizada de mentón, puente nasal y arco superciliar, y ancla las curvas procedurales al cuero cabelludo. Se generaron renders faciales antes y después con encuadre e iluminación idénticos. Las dos variantes capilares produjeron 21 piezas cerradas. Falta un componente generativo que supere el control de integración.
+- El pantalón permite ajustar cintura, puños y holgura. La variante probada sobre el cuerpo de Genesis pasó reposo, demostración y brazos elevados con cero contactos y vértices interiores.
+- Unity 2022.3.22f1 volvió a rechazar el arranque por falta de licencia activa en modo batch bajo el usuario activo. La clasificación oficial y el vestuario de VRChat siguen pendientes. Todos los derivados privados y los informes detallados se conservaron en el directorio ignorado.
+
 ## 28 de noviembre de 2026 · Breakthrough · Ajuste articulado con tres vistas
 
 - Genesis permite tratar el perfil como una observación horizontal para que los cambios de altura de esa pose queden fuera del ajuste. El ajuste guarda la opción y registra los ejes usados para calcular cada error de reproyección.

@@ -19,6 +19,7 @@ EYES = ("ojo-izquierdo", "ojo-derecho")
 FACE_CONTROLS = {
     "jaw": "Mandíbula", "cheeks": "Mejillas", "nose": "Nariz", "mouth": "Boca",
     "eye_size": "Tamaño de ojos", "eye_spacing": "Separación de ojos", "lips": "Grosor de labios",
+    "chin": "Mentón", "bridge": "Puente nasal", "brow": "Arco superciliar",
 }
 
 
@@ -74,16 +75,22 @@ def facial_vertices(mesh, factors):
     mouth = weight(.5, mouth_level, .24, .10)
     lip = weight(.5, mouth_level + .002, .21, .055)
     nose = weight(.5, level("nose", .34), .13, .20)
+    chin = weight(.5, level("jaw", -.06) - .12, .24, .10)
+    bridge = weight(.5, level("nose", .34) + .11, .07, .12)
     eye_x = .5 + side * .214
     eyes = weight(eye_x, eye_level, .19, .14)
+    brow = weight(eye_x, eye_level + .145, .19, .075)
     result = mesh.vertices.copy()
     result[:, 0] += width * ((x - .5) * (jaw * scale["jaw"] + mouth * scale["mouth"])
                              + (x - eye_x) * eyes * scale["eye_size"]
                              + side * .214 * eyes * scale["eye_spacing"])
     result[:, 1] += height * ((y - eye_level) * eyes * scale["eye_size"] - .20 * jaw * scale["jaw"])
     result[:, 1] += height * (y - mouth_level - .002) * lip * scale["lips"]
+    result[:, 1] -= height * (.16 * chin * scale["chin"] - .09 * brow * scale["brow"])
     result[:, 2] += depth * (.20 * cheek * scale["cheeks"] + .34 * nose * scale["nose"]
                              + .10 * mouth * scale["mouth"] + .11 * lip * scale["lips"])
+    result[:, 2] += depth * (.18 * chin * scale["chin"] + .21 * bridge * scale["bridge"]
+                             + .12 * brow * scale["brow"])
     return result
 
 
@@ -690,16 +697,18 @@ def fit_sleeves(body, clearance=.009, thickness=.004):
     return pieces
 
 
-def fit_trousers(body, color="#343957"):
+def fit_trousers(body, color="#343957", *, waist=.56, cuff=.09, clearance=.002):
     """Fit a closed garment shell from the waist to both ankles."""
     if not body.is_volume:
         raise ValueError("El pantalón requiere un cuerpo cerrado y orientado.")
+    if not .51 <= waist <= .60 or not .075 <= cuff <= .20 or not .001 <= clearance <= .012:
+        raise ValueError("Cintura 0,51–0,60, puño 0,075–0,20 y holgura 0,001–0,012.")
     height = body.extents[1]
     centers = body.triangles_center
     y = (centers[:, 1] - body.bounds[0, 1]) / height
-    waist = abs(centers[:, 0] - body.bounds.mean(axis=0)[0]) < .32 * body.extents[0]
-    selected = (y > .09) & (y < .56) & waist
-    trousers = _shell(body, selected, .002 * height, .0011 * height)
+    torso_width = abs(centers[:, 0] - body.bounds.mean(axis=0)[0]) < .32 * body.extents[0]
+    selected = (y > cuff) & (y < waist) & torso_width
+    trousers = _shell(body, selected, clearance * height, .0011 * height)
     report = body_contacts(body, trousers)
     if any(report.values()) or not trousers.is_volume:
         raise ValueError(f"Pantalón rechazado. Contactos {report['contacts']}, vértices interiores {report['inside']}.")

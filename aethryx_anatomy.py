@@ -67,7 +67,7 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
     if len(np.unique(anchors, axis=0)) != len(anchors):
         raise ValueError("Los puntos de control deben ocupar posiciones distintas.")
 
-    matrices, offsets, observations, masks, visibility, reference_colors, axes = [], [], [], [], [], [], []
+    matrices, offsets, observations, masks, visibility, reference_colors, axes, confidence = [], [], [], [], [], [], [], []
     names = [name for name in VIEWS if name in data["views"]]
     partial = data.get("allow_inferred_depth") is True
     if not names or set(names) != set(data["views"]) or (len(names) != 3 and not partial):
@@ -82,6 +82,10 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
         if projection.shape != (2, 4) or points.shape != (len(ids), 2):
             raise ValueError(f"Calibración o puntos inválidos en {name}.")
         visible = np.isfinite(points).all(axis=1)
+        weights = np.asarray(view.get("landmark_weights", np.ones(len(ids))), dtype=float)
+        if weights.shape != (len(ids),) or not np.isfinite(weights).all() or np.any((weights < 0) | (weights > 1)):
+            raise ValueError(f"Las ponderaciones de {name} deben estar entre 0 y 1.")
+        confidence.append(weights)
         if (not np.isfinite(projection).all() or not visible.any()
                 or not np.isnan(points[~visible]).all()
                 or np.any(points[visible] < 0) or np.any(points[visible] >= [width, height])):
@@ -107,12 +111,31 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
     if np.linalg.matrix_rank(system[active_rows]) != 3 and not partial:
         raise ValueError("Las cámaras no permiten recuperar profundidad.")
     targets = []
-    measured = np.asarray(visibility).T.repeat(2, axis=1) & active_rows
+    weights = np.asarray(confidence).T.repeat(2, axis=1)
+    measured = np.asarray(visibility).T.repeat(2, axis=1) & active_rows & (weights > 0)
     values = np.hstack([points - offset for points, offset in zip(observations, offsets)])
+    excluded_vertical = {}
+    if data.get("reconcile_pose") is True and "front" in names:
+        # Compare calibrated vertical observations in body-height units, retaining depth and width.
+        front_row = 2 * names.index("front") + 1
+        if np.allclose(system[front_row, (0, 2)], 0) and system[front_row, 1] != 0:
+            frontal_y = values[:, front_row] / system[front_row, 1]
+            for number, name in enumerate(names):
+                row = 2 * number + 1
+                if row == front_row or not np.allclose(system[row, (0, 2)], 0) or system[row, 1] == 0:
+                    continue
+                y = values[:, row] / system[row, 1]
+                rejected = measured[:, row] & measured[:, front_row] & (abs(y - frontal_y) > .06 * mesh.extents[1])
+                measured[rejected, row] = False
+                if rejected.any():
+                    excluded_vertical[name] = ids[rejected].tolist()
     ranks = {}
     for index, rows in enumerate(measured):
         observed = system[rows]
-        delta, _, rank, _ = np.linalg.lstsq(observed, values[index, rows] - observed @ anchors[index], rcond=None)
+        scale = np.sqrt(weights[index, rows])
+        delta, _, rank, _ = np.linalg.lstsq(
+            observed * scale[:, None], (values[index, rows] - observed @ anchors[index]) * scale, rcond=None,
+        )
         if rank < 2 or (rank != 3 and not partial):
             raise ValueError(f"Las observaciones no resuelven la profundidad del vértice {ids[index]}.")
         ranks[str(int(ids[index]))] = int(rank)
@@ -125,14 +148,12 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
     mesh.vertices = mesh.vertices + deform(mesh.vertices)
     if not np.isfinite(mesh.vertices).all() or np.any(mesh.area_faces <= 0):
         raise ValueError("El ajuste produjo geometría inválida o caras colapsadas.")
-    errors = {
-        name: float(np.sqrt(np.mean(np.sum(
-            (mesh.vertices[ids[visible]] @ matrix.T + offset - points[visible])[:, active_axes] ** 2, axis=1,
-        ))))
-        for name, matrix, offset, points, visible, active_axes in zip(
-            names, matrices, offsets, observations, visibility, axes,
-        )
-    }
+    errors = {}
+    for index, (name, matrix, offset, points) in enumerate(zip(names, matrices, offsets, observations)):
+        used = measured[:, 2 * index:2 * index + 2]
+        residual = np.where(used, mesh.vertices[ids] @ matrix.T + offset - points, 0)
+        if used.any():
+            errors[name] = float(np.sqrt(np.sum(residual ** 2) / np.count_nonzero(used.any(axis=1))))
     patches = partition_surfaces(mesh, matrices, offsets, masks, data.get("palette", {}),
                                  reference_colors=reference_colors)
     hull_class = data.get("visual_hull_class")
@@ -173,6 +194,7 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
             "visible_regional_colors": observed_colors,
             "reprojection_axes": {name: "xy" if use_vertical else "x"
                                   for name, (_, use_vertical) in zip(names, axes)},
+            "excluded_vertical_observations": excluded_vertical,
         }
     return mesh, patches, errors
 

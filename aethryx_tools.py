@@ -195,6 +195,11 @@ def inspect_component_geometry(path):
 
 
 TOOL_REGISTRY = {
+    "get_generation_preferences": ToolDefinition(
+        "get_generation_preferences",
+        "Muestra la selección del motor y la configuración local sin exponer rutas.",
+        {}, ("read",), True, True,
+    ),
     "get_component_job_counts": ToolDefinition(
         "get_component_job_counts",
         "Cuenta los trabajos de generación por estado sin exponer rutas ni referencias.",
@@ -309,6 +314,11 @@ def execute_tool(name, inputs, project_context=None, write_allowed=False):
             if isinstance(counts, dict):
                 return {"status": "available", "counts": counts}
             return {"status": "unavailable", "reason": "La cola local aún no está disponible."}
+        if name == "get_generation_preferences":
+            config = context.get("generation_preferences")
+            if isinstance(config, dict) and config:
+                return {"status": "available", "preferences": config}
+            return {"status": "unavailable", "reason": "Abre la herramienta desde Studio."}
     if name == "list_scene_nodes":
         return list_scene_nodes(inputs.get("model_path", ""))
     if name == "get_mesh_statistics":
