@@ -8,11 +8,23 @@ import trimesh
 
 from aethryx_reference import (
     SEMANTIC_COLORS, compare_silhouette, decode_semantic_scores, import_see_through_v2,
-    reference_silhouette, silhouette_calibration,
+    foreground_crop_diagnostics, reference_silhouette, silhouette_calibration,
 )
 
 
 class ReferenceTests(unittest.TestCase):
+    def test_crop_diagnostics_report_edge_and_detached_foreground(self):
+        mask = Image.new("L", (20, 20))
+        draw = ImageDraw.Draw(mask)
+        draw.rectangle((4, 4, 8, 19), fill=255)
+        draw.rectangle((18, 0, 19, 1), fill=255)
+        report = foreground_crop_diagnostics(mask)
+        self.assertEqual(report["edge_pixels"], {"top": 2, "bottom": 5, "left": 0, "right": 2})
+        self.assertEqual(report["components"], 2)
+        self.assertAlmostEqual(report["secondary_fraction"], 4 / 84)
+        self.assertIsNone(reference_silhouette(mask, mask))
+        self.assertEqual(foreground_crop_diagnostics(Image.new("L", (3, 3)))["components"], 0)
+
     def test_see_through_bridge_preserves_visible_labels_without_inventing_body(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "v2.npy"

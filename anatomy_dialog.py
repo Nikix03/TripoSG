@@ -21,7 +21,8 @@ from aethryx_engines import suggest_anatomical_points
 from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
 from aethryx_reference import (
     AnimeSilhouette, SEE_THROUGH_COLORS, SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, profile_opposite,
-    named_reference_views, reference_silhouette, refine_visible_mask, segment_anime_reference,
+    foreground_crop_diagnostics, named_reference_views, reference_silhouette, refine_visible_mask,
+    segment_anime_reference,
     segment_see_through_v2, semantic_reference_regions, silhouette_calibration,
 )
 from proportion_dialog import ProportionDialog
@@ -781,12 +782,22 @@ class AnatomyDialog(tk.Toplevel):
                         mask = loaded.convert("RGB")
                 elif segmenter is not None:
                     mask = segmenter.predict(image)
-                results[name] = silhouette_calibration(reference_silhouette(image, mask), found), found
+                report = foreground_crop_diagnostics(mask) if mask is not None else None
+                results[name] = silhouette_calibration(reference_silhouette(image, mask), found), found, report
             return results
         def apply(results):
             aligned = added = 0
-            for name, (calibration, found) in results.items():
+            issues = []
+            edge_labels = {"top": "superior", "bottom": "inferior",
+                           "left": "izquierdo", "right": "derecho"}
+            for name, (calibration, found, report) in results.items():
                 view = self.views[name]
+                if report is not None:
+                    edges = [edge_labels[edge] for edge, pixels in report["edge_pixels"].items() if pixels]
+                    if edges:
+                        issues.append(f"{VIEW_LABELS[name]} toca el borde ({', '.join(edges)})")
+                    if report["secondary_fraction"] >= .02:
+                        issues.append(f"{VIEW_LABELS[name]} tiene {report['secondary_fraction']:.0%} de área aislada")
                 if calibration and "projection" not in view:
                     if name == "side" and not self.side_manual:
                         opposite = profile_opposite(found, self.images[name].width)
@@ -806,7 +817,8 @@ class AnatomyDialog(tk.Toplevel):
             if aligned or added:
                 self._invalidate_comparison()
             self._refresh_points(self._selected())
-            self.status.set(f"{aligned} vistas alineadas · {added} puntos sugeridos. Revisa o calibra manualmente.")
+            summary = f"{aligned} vistas alineadas · {added} puntos sugeridos."
+            self.status.set(" · ".join([summary, *issues, "Revisa o calibra manualmente."]))
         self._work("Analizando siluetas y puntos anatómicos…", detect, apply)
 
     def _build_manifest(self, require_ready):

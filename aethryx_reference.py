@@ -181,6 +181,28 @@ def remove_mask_islands(mask, palette, minimum_area):
     return Image.fromarray(labels)
 
 
+def foreground_crop_diagnostics(mask):
+    """Report edge contact and secondary foreground without changing the mask.
+
+    The largest connected component is the subject candidate. Detached pixels
+    may be valid details, so their area is reported without removing them.
+    """
+    foreground = np.asarray(mask.convert("RGB")).any(axis=2)
+    count, _, stats, _ = cv2.connectedComponentsWithStats(
+        foreground.astype(np.uint8), connectivity=8,
+    )
+    pixels = int(foreground.sum())
+    largest = int(stats[1:, cv2.CC_STAT_AREA].max()) if count > 1 else 0
+    edges = {
+        "top": int(foreground[0].sum()),
+        "bottom": int(foreground[-1].sum()),
+        "left": int(foreground[:, 0].sum()),
+        "right": int(foreground[:, -1].sum()),
+    }
+    return {"edge_pixels": edges, "components": count - 1,
+            "secondary_fraction": (pixels - largest) / pixels if pixels else 0.0}
+
+
 def reference_silhouette(image, semantic_mask=None):
     explicit = semantic_mask is not None
     if semantic_mask is not None:
