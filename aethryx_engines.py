@@ -320,18 +320,23 @@ def _onnx_segmentation_regions(source, width, height):
         return [], f"Segmentación ONNX no disponible: {exc}"
 
 
-def _detect_pose(mp, mp_image, pose_model):
+def _detect_pose(mp, mp_image, pose_model, *, min_confidence=0.5):
     if not Path(pose_model).is_file():
         raise FileNotFoundError("Modelo pose no encontrado")
     options = mp.tasks.vision.PoseLandmarkerOptions(
         base_options=mp.tasks.BaseOptions(model_asset_path=str(pose_model)),
         running_mode=mp.tasks.vision.RunningMode.IMAGE,
+        min_pose_detection_confidence=min_confidence,
+        min_pose_presence_confidence=min_confidence,
     )
     with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
         return landmarker.detect(mp_image).pose_landmarks
 
 
-def suggest_anatomical_points(source):
+_CORE_POSE_JOINTS = (0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28)
+
+
+def suggest_anatomical_points(source, *, return_confidence=False):
     import mediapipe as mp
     import numpy as np
 
@@ -339,14 +344,126 @@ def suggest_anatomical_points(source):
     model = os.environ.get("AETHRYX_MEDIAPIPE_POSE_MODEL") or default
     with Image.open(source) as image:
         width, height = image.size
-        pixels = np.asarray(image.convert("RGB"))
-    groups = _detect_pose(mp, mp.Image(image_format=mp.ImageFormat.SRGB, data=pixels), model)
-    if not groups:
+        rgba = image.convert("RGBA")
+        alpha = rgba.getchannel("A")
+        if alpha.getextrema()[0] < 255:
+            bg = Image.new("RGBA", (width, height), (235, 235, 240, 255))
+            base = Image.alpha_composite(bg, rgba).convert("RGB")
+        else:
+            base = rgba.convert("RGB")
+
+    pad = max(16, int(round(0.12 * max(width, height))))
+    padded = Image.new("RGB", (width + 2 * pad, height + 2 * pad), (235, 235, 240))
+    padded.paste(base, (pad, pad))
+
+    best = None
+    best_score = (-1, -1.0)
+    attempts = (
+        (base, 0, width, height, 0.50),
+        (padded, pad, width + 2 * pad, height + 2 * pad, 0.50),
+        (padded, pad, width + 2 * pad, height + 2 * pad, 0.25),
+        (base, 0, width, height, 0.25),
+        (padded, pad, width + 2 * pad, height + 2 * pad, 0.15),
+    )
+    for candidate, offset, cw, ch, conf in attempts:
+        pixels = np.asarray(candidate)
+        groups = _detect_pose(mp, mp.Image(image_format=mp.ImageFormat.SRGB, data=pixels), model, min_confidence=conf)
+        if not groups:
+            continue
+        parsed = {}
+        core_vis = []
+        for index, point in enumerate(groups[0]):
+            vis = float(point.visibility or 0.0)
+            px = float(point.x * cw - offset)
+            py = float(point.y * ch - offset)
+            if vis >= 0.25 and 0 <= px < width and 0 <= py < height:
+                parsed[index] = (px, py, vis)
+                if index in _CORE_POSE_JOINTS:
+                    core_vis.append(vis)
+        score = (len(core_vis), sum(core_vis) / max(1, len(core_vis)))
+        if score > best_score:
+            best_score = score
+            best = parsed
+        if len(core_vis) >= 11 and score[1] >= 0.65:
+            break
+
+    if not best:
         return {}
+    # Keep high-confidence standard behavior when only high-vis points exist, plus valid anatomical limbs >= 0.25.
+    if return_confidence:
+        return {
+            index: {"xy": [px, py], "visibility": vis}
+            for index, (px, py, vis) in best.items()
+        }
     return {
-        index: [float(point.x * width), float(point.y * height)]
-        for index, point in enumerate(groups[0])
-        if (point.visibility or 0) >= 0.6 and 0 <= point.x < 1 and 0 <= point.y < 1
+        index: [px, py]
+        for index, (px, py, vis) in best.items()
+    }
+
+
+def suggest_facial_points(source, face_bbox=None):
+    """Detect facial landmarks on the face region using local MediaPipe FaceLandmarker."""
+    default = Path(__file__).parent / "models" / "mediapipe" / "face_landmarker.task"
+    model = os.environ.get("AETHRYX_MEDIAPIPE_FACE_MODEL") or default
+    if not Path(model).is_file():
+        return {}
+    try:
+        import mediapipe as mp
+        import numpy as np
+    except ImportError:
+        return {}
+
+    with Image.open(source) as image:
+        width, height = image.size
+        rgba = image.convert("RGBA")
+        if rgba.getchannel("A").getextrema()[0] < 255:
+            rgb = Image.alpha_composite(Image.new("RGBA", (width, height), (235, 235, 240, 255)), rgba).convert("RGB")
+        else:
+            rgb = rgba.convert("RGB")
+
+    if face_bbox is not None:
+        x0, y0, x1, y1 = face_bbox
+        bw, bh = x1 - x0, y1 - y0
+        cx0 = max(0, int(x0 - 0.35 * bw))
+        cy0 = max(0, int(y0 - 0.35 * bh))
+        cx1 = min(width, int(x1 + 0.35 * bw))
+        cy1 = min(height, int(y1 + 0.35 * bh))
+        crop = rgb.crop((cx0, cy0, cx1, cy1))
+    else:
+        cx0, cy0 = 0, 0
+        cx1, cy1 = width, max(1, int(height * 0.45))
+        crop = rgb.crop((cx0, cy0, cx1, cy1))
+
+    cw, ch = crop.size
+    if cw < 16 or ch < 16:
+        return {}
+    options = mp.tasks.vision.FaceLandmarkerOptions(
+        base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
+        running_mode=mp.tasks.vision.RunningMode.IMAGE,
+        num_faces=1,
+        min_face_detection_confidence=0.25,
+        min_face_presence_confidence=0.25,
+    )
+    with mp.tasks.vision.FaceLandmarker.create_from_options(options) as landmarker:
+        result = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.asarray(crop)))
+    faces = getattr(result, "face_landmarks", None)
+    if not faces:
+        return {}
+    lm = faces[0]
+    def pt(idx):
+        return [float(cx0 + lm[idx].x * cw), float(cy0 + lm[idx].y * ch)]
+    # Standard MediaPipe 468/478 face indices for anime facial anchors.
+    if len(lm) < 300:
+        return {}
+    left_eye = [(pt(33)[0] + pt(133)[0]) * 0.5, (pt(159)[1] + pt(145)[1]) * 0.5]
+    right_eye = [(pt(362)[0] + pt(263)[0]) * 0.5, (pt(386)[1] + pt(374)[1]) * 0.5]
+    return {
+        "left_eye": left_eye,
+        "right_eye": right_eye,
+        "nose_tip": pt(1),
+        "mouth_center": [(pt(13)[0] + pt(14)[0]) * 0.5, (pt(13)[1] + pt(14)[1]) * 0.5],
+        "chin": pt(152),
+        "forehead": pt(10),
     }
 
 

@@ -70,6 +70,18 @@ class AnimeSilhouette:
         return Image.fromarray(np.uint8(foreground >= .5) * 255)
 
 
+def default_see_through_paths(root=None):
+    """Return (python, source, checkpoint) if the local Apache-2.0 See-through V2 assets exist."""
+    import sys
+
+    base = Path(root) if root is not None else Path(__file__).resolve().parent
+    source = base / "external" / "see-through"
+    checkpoint = base / "pretrained_weights" / "See-through" / "checkpoint-18000.pt"
+    if (source / "common" / "modules" / "semanticsam.py").is_file() and checkpoint.is_file():
+        return sys.executable, str(source), str(checkpoint)
+    return None
+
+
 def import_see_through_v2(path, size, *, include_eyes=False):
     """Collapse externally inferred 19-layer V2 masks to visible semantic classes."""
     width, height = size
@@ -382,3 +394,397 @@ def compare_silhouette(mesh, image, projection, semantic_mask=None, maximum_size
     tint(model & ~reference, (0, 220, 255))
     union = int(np.count_nonzero(reference | model))
     return Image.fromarray(overlay), float(np.count_nonzero(reference & model) / union) if union else None
+
+
+def _hex_color(pixels):
+    rgb = np.rint(np.median(pixels, axis=0)).astype(np.uint8)
+    return "#%02x%02x%02x" % tuple(int(c) for c in rgb)
+
+
+def extract_reference_palette_and_style(image, mask=None, silhouette=None):
+    """Extract conservative color & garment-style hints from visible reference pixels."""
+    rgba = np.asarray(image.convert("RGBA"))
+    rgb = rgba[:, :, :3]
+    fg = np.asarray(silhouette.convert("L")) >= 128 if silhouette is not None else (rgba[:, :, 3] >= 128)
+    result = {}
+    if mask is not None:
+        labels = np.asarray(mask.convert("RGB"))
+        for key, target in (("hair", "hair"), ("face", "skin"), ("clothing", "clothing"), ("body", "skin")):
+            sel = np.all(labels == SEE_THROUGH_COLORS[key], axis=2) & fg
+            if sel.sum() >= 24 and target not in result:
+                result[target] = _hex_color(rgb[sel])
+        hair_sel = np.all(labels == SEE_THROUGH_COLORS["hair"], axis=2) & fg
+        if hair_sel.sum() >= 64:
+            hy, _ = np.where(hair_sel)
+            y_split_top = np.quantile(hy, .35)
+            y_split_bot = np.quantile(hy, .75)
+            root_px = rgb[hair_sel & (np.arange(rgb.shape[0])[:, None] <= y_split_top)]
+            tip_px = rgb[hair_sel & (np.arange(rgb.shape[0])[:, None] >= y_split_bot)]
+            if len(root_px) >= 16:
+                result["hair_root"] = _hex_color(root_px)
+            if len(tip_px) >= 16:
+                result["hair_tip"] = _hex_color(tip_px)
+        eye_sel = np.all(labels == SEE_THROUGH_COLORS["eyes"], axis=2) & fg
+        if eye_sel.sum() >= 20:
+            ey, ex = np.where(eye_sel)
+            mid_x = float(np.median(ex))
+            eyes = []
+            for side_mask in (ex >= mid_x, ex < mid_x):
+                pts = rgb[ey[side_mask], ex[side_mask]]
+                if len(pts) >= 6:
+                    # Pick chromatic non-sclera pixels for iris tint.
+                    chroma = pts.max(axis=1).astype(int) - pts.min(axis=1).astype(int)
+                    dark = pts.mean(axis=1) < 225
+                    iris = pts[(chroma >= 18) & dark]
+                    eyes.append(_hex_color(iris if len(iris) >= 4 else pts))
+            if len(eyes) == 2:
+                result["eyes"] = tuple(eyes)
+        cloth_sel = np.all(labels == SEE_THROUGH_COLORS["clothing"], axis=2) & fg
+        if cloth_sel.sum() >= 48:
+            cy, cx = np.where(cloth_sel)
+            mid_y = float(np.quantile(cy, .50))
+            top_px = rgb[cloth_sel & (np.arange(rgb.shape[0])[:, None] <= mid_y)]
+            bot_px = rgb[cloth_sel & (np.arange(rgb.shape[0])[:, None] > mid_y)]
+            if len(top_px) >= 24:
+                result["topwear"] = _hex_color(top_px)
+            if len(bot_px) >= 24:
+                result["bottomwear"] = _hex_color(bot_px)
+            # Heuristic: dress vs top+trousers based on lower-garment horizontal continuity.
+            lower_rows = np.unique(cy[cy > mid_y])
+            if len(lower_rows) >= 6:
+                span_ratios = []
+                for r in lower_rows[::max(1, len(lower_rows) // 6)]:
+                    row_xs = np.flatnonzero(cloth_sel[r])
+                    if len(row_xs) >= 4:
+                        span = row_xs.max() - row_xs.min() + 1
+                        span_ratios.append(len(row_xs) / max(1, span))
+                if span_ratios and float(np.median(span_ratios)) >= 0.85:
+                    result["garment_style"] = "vestido"
+                else:
+                    result["garment_style"] = "top"
+    elif fg.any():
+        ys, xs = np.where(fg)
+        y0, y1 = int(ys.min()), int(ys.max())
+        h = max(1, y1 - y0)
+        hair_band = fg & (np.arange(rgb.shape[0])[:, None] <= y0 + .16 * h)
+        torso_band = fg & (np.arange(rgb.shape[0])[:, None] >= y0 + .28 * h) & (np.arange(rgb.shape[0])[:, None] <= y0 + .55 * h)
+        if hair_band.sum() >= 24:
+            result["hair_root"] = _hex_color(rgb[hair_band])
+        if torso_band.sum() >= 24:
+            result["topwear"] = _hex_color(rgb[torso_band])
+    return result
+
+
+def estimate_silhouette_limbs(foreground, pose_points, calibration):
+    """Fill missing wrist or ankle points safely using silhouette geometry around detected parent joints."""
+    if foreground is None or calibration is None:
+        return dict(pose_points)
+    points = dict(pose_points)
+    (cx, floor), crown = calibration
+    height = max(8.0, floor - crown)
+    h, w = foreground.shape
+    # Estimate missing wrists from shoulder/elbow outer silhouette reach in mid-body band.
+    for side, shoulder_id, elbow_id, wrist_id in (("left", 11, 13, 15), ("right", 12, 14, 16)):
+        if wrist_id in points or shoulder_id not in points:
+            continue
+        sx, sy = points[shoulder_id]
+        y_lo = int(max(0, min(h - 1, sy)))
+        y_hi = int(max(y_lo + 2, min(h, crown + .68 * height)))
+        band = foreground[y_lo:y_hi]
+        if not band.any():
+            continue
+        if side == "left":
+            # Image-left (character right) vs image-right (character left): follow shoulder sign relative to cx.
+            is_right_in_img = sx >= cx
+            xs_mask = (np.arange(w) >= (cx + .08 * height)) if is_right_in_img else (np.arange(w) <= (cx - .08 * height))
+        else:
+            is_right_in_img = sx >= cx
+            xs_mask = (np.arange(w) >= (cx + .08 * height)) if is_right_in_img else (np.arange(w) <= (cx - .08 * height))
+        arm_fg = band[:, xs_mask]
+        if not arm_fg.any():
+            continue
+        ys_local, xs_local = np.where(arm_fg)
+        x_offset = int(cx + .08 * height) if is_right_in_img else 0
+        # Distal tip is furthest along shoulder->elbow vector (or lowest-outer point).
+        if elbow_id in points:
+            ex, ey = points[elbow_id]
+            dx, dy = ex - sx, ey - sy
+        else:
+            dx, dy = (1.0 if is_right_in_img else -1.0), 1.2
+        proj = (xs_local + x_offset - sx) * dx + (ys_local + y_lo - sy) * dy
+        tip_band = proj >= np.quantile(proj, .90)
+        wx = float(np.median(xs_local[tip_band]) + x_offset)
+        wy = float(np.median(ys_local[tip_band]) + y_lo)
+        points[wrist_id] = [wx, wy]
+    # Estimate missing ankles near bottom of silhouette on each side of cx.
+    for side, hip_id, ankle_id in (("left", 23, 27), ("right", 24, 28)):
+        if ankle_id in points:
+            continue
+        y_lo = int(max(0, crown + .82 * height))
+        y_hi = int(min(h, floor + 1))
+        if y_hi <= y_lo:
+            continue
+        is_right = (points[hip_id][0] >= cx) if hip_id in points else (side == "left")
+        xs_mask = (np.arange(w) >= cx) if is_right else (np.arange(w) < cx)
+        leg_fg = foreground[y_lo:y_hi, xs_mask]
+        if leg_fg.any():
+            ys_l, xs_l = np.where(leg_fg)
+            x_off = int(cx) if is_right else 0
+            points[ankle_id] = [float(np.median(xs_l) + x_off), float(np.quantile(ys_l, .60) + y_lo)]
+    return points
+
+
+def _estimate_pre_pose_and_proportions(foreground, pose_points, semantic_mask, calibration, template_mesh):
+    """Estimate anime proportions and XY limb rotations from calibrated front evidence."""
+    from aethryx_rig import humanoid_skeleton
+
+    (cx, floor), crown = calibration
+    img_h = max(8.0, floor - crown)
+    h, w = foreground.shape
+    proportions = {}
+
+    # Estimate head scale from semantic face/hair or upper silhouette width/neck pinch.
+    head_ratio = None
+    if semantic_mask is not None:
+        labels = np.asarray(semantic_mask.convert("RGB"))
+        face_px = np.all(labels == SEE_THROUGH_COLORS["face"], axis=2) & foreground
+        if face_px.sum() >= 48:
+            fy, _ = np.where(face_px)
+            chin_y = float(np.quantile(fy, .98))
+            head_ratio = (chin_y - crown) / img_h
+    if head_ratio is None and 0 in pose_points and 11 in pose_points and 12 in pose_points:
+        shoulder_y = 0.5 * (pose_points[11][1] + pose_points[12][1])
+        head_ratio = ((shoulder_y - crown) / img_h) * 0.85
+    if head_ratio is not None and 0.10 <= head_ratio <= 0.35:
+        proportions["head"] = float(np.clip(head_ratio / 0.155, 0.85, 1.32))
+
+    # Estimate shoulder/hip/waist/leg proportions when shoulders & hips are detected.
+    tmpl_h = float(template_mesh.extents[1])
+    tmpl_w = float(template_mesh.extents[0])
+    if 11 in pose_points and 12 in pose_points and 23 in pose_points and 24 in pose_points:
+        sh_w = abs(pose_points[11][0] - pose_points[12][0]) / img_h
+        hip_w = abs(pose_points[23][0] - pose_points[24][0]) / img_h
+        sh_y = 0.5 * (pose_points[11][1] + pose_points[12][1])
+        hip_y = 0.5 * (pose_points[23][1] + pose_points[24][1])
+        # Bundled shoulder span ~0.239/height, hip span ~0.165/height.
+        proportions["shoulders"] = float(np.clip(sh_w / 0.239, 0.82, 1.25))
+        proportions["hips"] = float(np.clip(hip_w / 0.165, 0.82, 1.28))
+        leg_frac = (floor - hip_y) / img_h
+        if 0.35 <= leg_frac <= 0.65:
+            proportions["legs"] = float(np.clip(leg_frac / 0.50, 0.85, 1.25))
+        torso_frac = (hip_y - sh_y) / img_h
+        if 0.18 <= torso_frac <= 0.42:
+            proportions["torso"] = float(np.clip(torso_frac / 0.29, 0.82, 1.22))
+
+    # Compute frontal XY arm & leg angles relative to template skeleton for clean pre-pose alignment.
+    pre_pose = {}
+    names, _, pos = humanoid_skeleton(template_mesh)
+    for side, sh_id, el_id, wr_id in (("Left", 11, 13, 15), ("Right", 12, 14, 16)):
+        if sh_id in pose_points and (el_id in pose_points or wr_id in pose_points):
+            target_id = el_id if el_id in pose_points else wr_id
+            sx, sy = pose_points[sh_id]
+            tx, ty = pose_points[target_id]
+            # Image Y points down; 3D Y points up.
+            ref_vec = np.array([tx - sx, -(ty - sy)], dtype=float)
+            p_sh = pos[names.index(side + "UpperArm")][:2]
+            p_tg = pos[names.index(side + ("LowerArm" if el_id in pose_points else "Hand"))][:2]
+            tmpl_vec = p_tg - p_sh
+            if np.linalg.norm(ref_vec) > 4.0 and np.linalg.norm(tmpl_vec) > 1e-5:
+                ang_ref = np.degrees(np.arctan2(ref_vec[1], ref_vec[0]))
+                ang_tmpl = np.degrees(np.arctan2(tmpl_vec[1], tmpl_vec[0]))
+                delta = float(((ang_ref - ang_tmpl + 180) % 360) - 180)
+                delta = float(np.clip(delta, -55.0, 55.0))
+                if abs(delta) > 3.0:
+                    pre_pose[side + "UpperArm"] = [0.0, 0.0, delta]
+                    if el_id in pose_points and wr_id in pose_points:
+                        ex, ey = pose_points[el_id]
+                        wx, wy = pose_points[wr_id]
+                        fore_ref = np.array([wx - ex, -(wy - ey)], dtype=float)
+                        p_wr = pos[names.index(side + "Hand")][:2]
+                        fore_tmpl = p_wr - pos[names.index(side + "LowerArm")][:2]
+                        if np.linalg.norm(fore_ref) > 4.0 and np.linalg.norm(fore_tmpl) > 1e-5:
+                            f_delta = float(((np.degrees(np.arctan2(fore_ref[1], fore_ref[0]))
+                                              - np.degrees(np.arctan2(fore_tmpl[1], fore_tmpl[0])) - delta + 180) % 360) - 180)
+                            f_delta = float(np.clip(f_delta, -50.0, 50.0))
+                            if abs(f_delta) > 3.0:
+                                pre_pose[side + "LowerArm"] = [0.0, 0.0, f_delta]
+    return proportions, pre_pose
+
+
+def build_auto_front_setup(image_path, *, work_dir=None, use_see_through=False, use_sculpted_body=True,
+                           profile="Anime neutro", root=None):
+    """Build an automatic, validated single-image Genesis setup with pose, proportions, and palette."""
+    from tempfile import mkdtemp
+    from threading import Event
+    from aethryx_anatomy import orthographic_projection
+    from aethryx_anime import sculpted_body
+    from aethryx_engines import suggest_anatomical_points, suggest_facial_points
+    from aethryx_profiles import BUNDLED_BODY, resolve_pose_vertices
+
+    src = Path(image_path).expanduser().resolve(strict=True)
+    work = Path(work_dir) if work_dir is not None else Path(mkdtemp(prefix="aethryx-auto-"))
+    work.mkdir(parents=True, exist_ok=True)
+    with Image.open(src) as loaded:
+        rgba = loaded.convert("RGBA")
+
+    # Obtain foreground silhouette via alpha or ISNet.
+    alpha = rgba.getchannel("A")
+    if alpha.getextrema()[0] < 32:
+        fg_mask = Image.fromarray((np.asarray(alpha) >= 128).astype(np.uint8) * 255)
+    else:
+        fg_mask = AnimeSilhouette().predict(rgba.convert("RGB"))
+        rgba_arr = np.asarray(rgba).copy()
+        rgba_arr[:, :, 3] = np.asarray(fg_mask)
+        rgba = Image.fromarray(rgba_arr, "RGBA")
+
+    # If the subject touches the image border, pad the working copy slightly so calibration stays valid.
+    fg_arr = np.asarray(fg_mask) >= 128
+    if fg_arr[[0, -1]].any() or fg_arr[:, [0, -1]].any():
+        pad = max(12, int(round(0.06 * max(rgba.size))))
+        padded_rgba = Image.new("RGBA", (rgba.width + 2 * pad, rgba.height + 2 * pad), (0, 0, 0, 0))
+        padded_rgba.paste(rgba, (pad, pad))
+        rgba = padded_rgba
+        fg_mask = rgba.getchannel("A").point(lambda v: 255 if v >= 128 else 0)
+        fg_arr = np.asarray(fg_mask) >= 128
+
+    working_img = work / "front-auto.png"
+    rgba.save(working_img, format="PNG")
+    body_mask_path = work / "front-body-mask.png"
+    fg_mask.convert("RGB").save(body_mask_path, format="PNG")
+
+    semantic_mask = None
+    semantic_mask_path = None
+    if use_see_through:
+        st_paths = default_see_through_paths(root)
+        if st_paths is not None:
+            try:
+                raw_mask = segment_see_through_v2(str(working_img), rgba.size, *st_paths, cancelled=Event())
+                if raw_mask is not None:
+                    semantic_mask = refine_visible_mask(rgba, raw_mask, fg_mask)
+                    semantic_mask_path = work / "front-semantic-mask.png"
+                    semantic_mask.save(semantic_mask_path, format="PNG")
+            except Exception:
+                semantic_mask = None
+
+    try:
+        raw_pose = suggest_anatomical_points(working_img, return_confidence=True)
+    except (ImportError, OSError, RuntimeError, ValueError):
+        raw_pose = {}
+    pose_points = {}
+    pose_weights = {}
+    # Filter landmarks against a mildly dilated foreground silhouette to discard background hallucinations.
+    dilated = cv2.dilate(fg_arr.astype(np.uint8), np.ones((max(5, rgba.height // 35), max(5, rgba.height // 35)), np.uint8)) > 0
+    for joint, entry in raw_pose.items():
+        px, py = entry["xy"]
+        ix, iy = int(np.clip(round(px), 0, rgba.width - 1)), int(np.clip(round(py), 0, rgba.height - 1))
+        if dilated[iy, ix]:
+            pose_points[joint] = [px, py]
+            pose_weights[joint] = float(np.clip(entry["visibility"], 0.45, 1.0))
+
+    calibration = silhouette_calibration(fg_arr, pose_points)
+    if calibration is None:
+        raise ValueError("No se pudo calibrar la silueta frontal de la imagen.")
+    pose_points = estimate_silhouette_limbs(fg_arr, pose_points, calibration)
+    for j in pose_points:
+        pose_weights.setdefault(j, 0.45)
+
+    # Detect facial anchor refinements if face_landmarker is available.
+    face_bbox = None
+    if semantic_mask is not None:
+        face_sel = np.all(np.asarray(semantic_mask) == SEE_THROUGH_COLORS["face"], axis=2) & fg_arr
+        if face_sel.sum() >= 24:
+            fy, fx = np.where(face_sel)
+            face_bbox = (int(fx.min()), int(fy.min()), int(fx.max()) + 1, int(fy.max()) + 1)
+    face_points = suggest_facial_points(working_img, face_bbox=face_bbox)
+    if "nose_tip" in face_points and 0 not in pose_points:
+        pose_points[0] = face_points["nose_tip"]
+        pose_weights[0] = 0.75
+
+    template_mesh = sculpted_body(profile, refined=True, facial_loops=True) if use_sculpted_body else None
+    if template_mesh is None:
+        from aethryx_anatomy import load_body_template
+        template_mesh = load_body_template(BUNDLED_BODY)
+
+    proportions, pre_pose = _estimate_pre_pose_and_proportions(fg_arr, pose_points, semantic_mask, calibration, template_mesh)
+    pose_map = resolve_pose_vertices(template_mesh)
+    center, crown = calibration
+    projection = orthographic_projection("front", center, center[1], crown, template_mesh.bounds).tolist()
+
+    # Build vertex_indices + landmarks + contour anchors (crown, temples, ankles).
+    used_joints = []
+    used_vertices = set()
+    for joint, vertex in pose_map.items():
+        if joint in pose_points and vertex not in used_vertices:
+            used_joints.append(joint)
+            used_vertices.add(vertex)
+    vertex_indices = [pose_map[j] for j in used_joints]
+    landmarks = [pose_points[j] for j in used_joints]
+    weights = [pose_weights[j] for j in used_joints]
+
+    # Add crown & temple contour anchors so head silhouette matches the reference width/top.
+    crown_vid = int(np.argmax(template_mesh.vertices[:, 1]))
+    if crown_vid not in vertex_indices:
+        vertex_indices.append(crown_vid)
+        landmarks.append([float(center[0]), float(crown)])
+        weights.append(0.9)
+    eye_y_world = template_mesh.bounds[0, 1] + 0.90 * template_mesh.extents[1]
+    head_band = np.abs(template_mesh.vertices[:, 1] - eye_y_world) < 0.03 * template_mesh.extents[1]
+    if head_band.any():
+        band_ids = np.flatnonzero(head_band)
+        left_temple = int(band_ids[np.argmax(template_mesh.vertices[band_ids, 0])])
+        right_temple = int(band_ids[np.argmin(template_mesh.vertices[band_ids, 0])])
+        if face_bbox is not None:
+            fx0, fy0, fx1, fy1 = face_bbox
+            temple_y = float(0.5 * (fy0 + fy1))
+            left_x, right_x = float(fx1), float(fx0)
+        else:
+            temple_y = float(crown + 0.08 * (center[1] - crown))
+            row_xs = np.flatnonzero(fg_arr[int(np.clip(round(temple_y), 0, rgba.height - 1))])
+            if len(row_xs) >= 4:
+                right_x, left_x = float(np.quantile(row_xs, .12)), float(np.quantile(row_xs, .88))
+            else:
+                right_x = left_x = None
+        if left_x is not None and left_temple not in vertex_indices and right_temple not in vertex_indices:
+            vertex_indices.extend((left_temple, right_temple))
+            landmarks.extend(([left_x, temple_y], [right_x, temple_y]))
+            weights.extend((0.65, 0.65))
+
+    if len(vertex_indices) < 4:
+        raise ValueError("No se encontraron suficientes correspondencias anatómicas automáticas en la imagen.")
+
+    appearance = extract_reference_palette_and_style(rgba, semantic_mask, fg_mask)
+    palette = {name: list(color) for name, color in SEE_THROUGH_COLORS.items() if name != "background"} if semantic_mask_path else {}
+
+    front_view = {
+        "image": str(working_img),
+        "body_mask": str(body_mask_path),
+        "calibration": [center, crown],
+        "projection": projection,
+        "landmarks": landmarks,
+        "landmark_weights": weights,
+        "suggested": list(vertex_indices),
+        "hidden": [],
+    }
+    if semantic_mask_path is not None:
+        front_view["mask"] = str(semantic_mask_path)
+
+    return {
+        "template": str(BUNDLED_BODY),
+        "bundled_template": not use_sculpted_body,
+        "use_sculpted_body": bool(use_sculpted_body),
+        "profile": profile,
+        "vertex_indices": vertex_indices,
+        "views": {"front": front_view},
+        "palette": palette,
+        "pose_links": {str(pose_map[j]): j for j in used_joints},
+        "allow_inferred_depth": True,
+        "export_rig": True,
+        "export_hybrid": True,
+        "repair_hair_in_poses": True,
+        "smoothing": 0.005,
+        "proportions": {},
+        "pre_proportions": proportions,
+        "pre_pose": pre_pose,
+        "appearance": appearance,
+        "auto_generated": True,
+    }

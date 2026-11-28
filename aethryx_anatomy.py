@@ -69,13 +69,49 @@ def load_body_template(path):
 
 
 def reconstruct_data(data, root=Path("."), *, deformation_report=None):
-    if data.get("bundled_template"):
+    if data.get("use_sculpted_body"):
+        from aethryx_anime import sculpted_body
+        profile = data.get("profile", "Anime neutro")
+        if profile == "Personalizado":
+            profile = "Anime neutro"
+        mesh = sculpted_body(profile, refined=True, facial_loops=True)
+    elif data.get("bundled_template"):
         from aethryx_profiles import BUNDLED_BODY
         template = BUNDLED_BODY
+        mesh = load_body_template(template)
     else:
         template = root / data["template"]
-    mesh = load_body_template(template)
+        mesh = load_body_template(template)
     original = mesh.copy() if deformation_report is not None else None
+    pre_pose = data.get("pre_pose")
+    pre_proportions = data.get("pre_proportions")
+    tracked_skeleton = None
+    if pre_pose or pre_proportions or data.get("use_sculpted_body") or data.get("bundled_template"):
+        try:
+            from aethryx_rig import deform_pose, humanoid_skeleton, pose_matrices, skin_weights
+            skeleton = humanoid_skeleton(mesh)
+            tracked_skeleton = skeleton[2].copy()
+            if isinstance(pre_proportions, dict) and pre_proportions:
+                bounds = mesh.bounds.copy()
+                mesh.vertices = anime_proportions(mesh.vertices, bounds, pre_proportions)
+                tracked_skeleton = anime_proportions(tracked_skeleton, bounds, pre_proportions)
+                if "aethryx_eye_guide" in mesh.metadata:
+                    g = anime_proportions(np.array([mesh.metadata["aethryx_eye_guide"][:3]], dtype=float), bounds, pre_proportions)
+                    mesh.metadata["aethryx_eye_guide"] = [float(g[0, 0]), float(g[0, 1]), float(g[0, 2]), float(mesh.extents[1])]
+                if "aethryx_face_levels" in mesh.metadata:
+                    mid_x, mid_z = float(mesh.centroid[0]), float(mesh.bounds[1, 2])
+                    for k, yval in list(mesh.metadata["aethryx_face_levels"].items()):
+                        pt = anime_proportions(np.array([[mid_x, yval, mid_z]], dtype=float), bounds, pre_proportions)
+                        mesh.metadata["aethryx_face_levels"][k] = float(pt[0, 1])
+                mesh.metadata["aethryx_skeleton_positions"] = tracked_skeleton.tolist()
+                skeleton = humanoid_skeleton(mesh)
+            if isinstance(pre_pose, dict) and pre_pose:
+                joints, sweights = skin_weights(np.asarray(mesh.vertices), skeleton, 4)
+                matrices = pose_matrices(skeleton, pre_pose)
+                mesh.vertices = deform_pose(np.asarray(mesh.vertices), joints, sweights, matrices)
+                tracked_skeleton = np.einsum("nij,nj->ni", matrices[:, :3, :3], tracked_skeleton) + matrices[:, :3, 3]
+        except Exception:
+            tracked_skeleton = None
     ids = np.asarray(data["vertex_indices"])
     if (ids.ndim != 1 or ids.dtype.kind not in "iu" or len(ids) < 4
             or len(np.unique(ids)) != len(ids) or ids.min() < 0
@@ -164,6 +200,20 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
     deform = RBFInterpolator(anchors, targets - anchors, kernel="linear", degree=0,
                              smoothing=smoothing * mesh.extents[1])
     mesh.vertices = mesh.vertices + deform(mesh.vertices)
+    if tracked_skeleton is not None:
+        tracked_skeleton = tracked_skeleton + deform(tracked_skeleton)
+    if "aethryx_eye_guide" in mesh.metadata:
+        gx, gy, gz, _ = mesh.metadata["aethryx_eye_guide"]
+        shifted = np.array([[gx, gy, gz]], dtype=float)
+        shifted = shifted + deform(shifted)
+        mesh.metadata["aethryx_eye_guide"] = [float(shifted[0, 0]), float(shifted[0, 1]), float(shifted[0, 2]), float(mesh.extents[1])]
+    if "aethryx_face_levels" in mesh.metadata:
+        mid_x, mid_z = float(mesh.centroid[0]), float(mesh.bounds[1, 2])
+        updated_levels = {}
+        for k, yval in mesh.metadata["aethryx_face_levels"].items():
+            pt = np.array([[mid_x, yval, mid_z]], dtype=float)
+            updated_levels[k] = float((pt + deform(pt))[0, 1])
+        mesh.metadata["aethryx_face_levels"] = updated_levels
     if not np.isfinite(mesh.vertices).all() or np.any(mesh.area_faces <= 0):
         raise ValueError("El ajuste produjo geometría inválida o caras colapsadas.")
     errors = {}
@@ -187,8 +237,21 @@ def reconstruct_data(data, root=Path("."), *, deformation_report=None):
         # A scene without masks may hold the same mesh object.
         for piece in {id(piece): piece for piece in (mesh, *patches.geometry.values())}.values():
             piece.vertices = anime_proportions(piece.vertices, bounds, proportions)
+        if tracked_skeleton is not None:
+            tracked_skeleton = anime_proportions(tracked_skeleton, bounds, proportions)
+        if "aethryx_eye_guide" in mesh.metadata:
+            g = np.array([mesh.metadata["aethryx_eye_guide"][:3]], dtype=float)
+            g = anime_proportions(g, bounds, proportions)
+            mesh.metadata["aethryx_eye_guide"] = [float(g[0, 0]), float(g[0, 1]), float(g[0, 2]), float(mesh.extents[1])]
+        if "aethryx_face_levels" in mesh.metadata:
+            mid_x, mid_z = float(mesh.centroid[0]), float(mesh.bounds[1, 2])
+            for k, yval in list(mesh.metadata["aethryx_face_levels"].items()):
+                pt = anime_proportions(np.array([[mid_x, yval, mid_z]], dtype=float), bounds, proportions)
+                mesh.metadata["aethryx_face_levels"][k] = float(pt[0, 1])
         if not np.isfinite(mesh.vertices).all() or np.any(mesh.area_faces <= 0):
             raise ValueError("Las proporciones produjeron caras inválidas.")
+    if tracked_skeleton is not None and np.isfinite(tracked_skeleton).all():
+        mesh.metadata["aethryx_skeleton_positions"] = tracked_skeleton.tolist()
     if deformation_report is not None:
         deformation_report.update(validate_deformation(original, mesh))
         observed_colors = {}
@@ -394,6 +457,9 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
     issues = blocking_geometry_issues(report)
     if issues:
         raise ValueError("\n".join(issues))
+    Path(folder).mkdir(parents=True, exist_ok=True)
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
     output = Path(mkdtemp(prefix="genesis7-", dir=folder))
     try:
         body = output / "cuerpo-base.glb"
@@ -401,21 +467,32 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
         modular = None
         components = [{"name": "cuerpo-base", "role": "body", "file": body.name}]
         if data.get("export_hybrid") is True:
-            from aethryx_anime import fitted_eye_details
+            from aethryx_anime import fitted_eye_details, sculpted_face_parts
             from aethryx_materials import update_pbr_maps, woven_normal_map
             from aethryx_modular import (
                 EYES, apply_material, avatar_eye, body_contacts, clear_hair_penetrations,
-                fit_garment_with_clearance, fitted_eyelids, regional_hair,
+                fit_footwear, fit_garment_with_clearance, fit_trousers, fitted_eyelids,
+                mouth_components, regional_hair,
             )
 
             colors = report.get("reference_evidence", {}).get("visible_regional_colors", {})
-            hair_options = {"root": colors["hair"]} if "hair" in colors else {}
+            appearance = data.get("appearance") or {}
+            if appearance.get("skin"):
+                mesh = apply_material(mesh, appearance["skin"], projection="cylindrical", roughness=.62)
+            hair_root = appearance.get("hair_root") or appearance.get("hair") or colors.get("hair")
+            hair_tip = appearance.get("hair_tip") or hair_root
+            hair_options = {}
+            if hair_root:
+                hair_options["root"] = hair_root
             outline = report.get("reference_evidence", {}).get("frontal_hair_outline")
             hair_review = {}
             if outline:
                 from aethryx_anime import layered_hair
-                hair = layered_hair(mesh, follow_scalp=True, frontal_outline=outline, **hair_options)
-                baseline = layered_hair(mesh, follow_scalp=True, **hair_options)
+                layered_opts = dict(hair_options)
+                if hair_tip:
+                    layered_opts["tips"] = (hair_tip, hair_tip)
+                hair = layered_hair(mesh, follow_scalp=True, frontal_outline=outline, **layered_opts)
+                baseline = layered_hair(mesh, follow_scalp=True, **layered_opts)
                 for name, piece in hair.items():
                     contacts = body_contacts(mesh, piece)
                     retained = True
@@ -430,23 +507,55 @@ def export_studio_reconstruction(folder, data, mesh, patches, report, errors, co
                         hair[name], repair = clear_hair_penetrations(mesh, hair[name])
                         hair_review[name]["clearance_repair"] = repair
             else:
+                if hair_tip:
+                    hair_options["tip"] = hair_tip
                 hair = regional_hair(mesh, **hair_options)
             pieces = {"cuerpo-base": mesh, **hair}
-            for eye_name, left, color in zip(EYES, (True, False), ("#6589d4", "#ae6798")):
-                eye = avatar_eye(mesh, left, color, refined=True)
-                pieces[eye_name] = eye
-                for lid, part in fitted_eyelids(eye).items():
-                    pieces[f"{eye_name}-parpado-{lid}"] = part
-                for detail, part in fitted_eye_details(eye, left=left).items():
-                    pieces[f"{eye_name}-{detail}"] = part
+            eye_colors = tuple(appearance.get("eyes", ("#6589d4", "#ae6798")))
+            if len(eye_colors) != 2:
+                eye_colors = ("#6589d4", "#ae6798")
+            if "aethryx_eye_guide" in mesh.metadata:
+                pieces.update(sculpted_face_parts(mesh, eye_colors))
+                try:
+                    pieces.update(mouth_components(mesh))
+                except ValueError:
+                    pass
+            else:
+                for eye_name, left, color in zip(EYES, (True, False), eye_colors):
+                    eye = avatar_eye(mesh, left, color, refined=True)
+                    pieces[eye_name] = eye
+                    for lid, part in fitted_eyelids(eye, appearance.get("skin", "#edbea9")).items():
+                        pieces[f"{eye_name}-parpado-{lid}"] = part
+                    for detail, part in fitted_eye_details(eye, left=left).items():
+                        pieces[f"{eye_name}-{detail}"] = part
+            garment_style = appearance.get("garment_style", "top")
+            if garment_style not in {"top", "vestido"}:
+                garment_style = "top"
             try:
-                shirt, clearance = fit_garment_with_clearance(mesh, .016, .006, "top")
+                shirt, clearance = fit_garment_with_clearance(mesh, .016, .006, garment_style)
             except ValueError as exc:
                 raise ValueError(f"La camiseta base no superó el control de ajuste. {exc}") from exc
-            if "clothing" in colors:
-                shirt = apply_material(shirt, colors["clothing"], projection="cylindrical", roughness=.8)
+            top_color = appearance.get("topwear") or colors.get("clothing")
+            if top_color:
+                shirt = apply_material(shirt, top_color, projection="cylindrical", roughness=.8)
             update_pbr_maps(shirt, {"normal": woven_normal_map()}, resolution=512)
-            pieces["prenda-camiseta"] = shirt
+            garment_node = "ropa-vestido" if garment_style == "vestido" else "prenda-camiseta"
+            pieces[garment_node] = shirt
+            if garment_style == "top" and appearance.get("bottomwear"):
+                try:
+                    trousers = fit_trousers(mesh, color=appearance["bottomwear"])
+                    pieces.update(trousers)
+                except ValueError:
+                    try:
+                        skirt, _ = fit_garment_with_clearance(mesh, .014, .005, "falda")
+                        pieces["prenda-falda"] = apply_material(skirt, appearance["bottomwear"], projection="cylindrical", roughness=.8)
+                    except ValueError:
+                        pass
+            if appearance:
+                try:
+                    pieces.update(fit_footwear(mesh, color=appearance.get("footwear", "#353044"), rounded=True))
+                except ValueError:
+                    pass
             if outline and data.get("repair_hair_in_poses") is True:
                 from aethryx_rig import PosePreview, hair_clearance_bodies
                 preview = PosePreview(trimesh.Scene(pieces))
@@ -591,6 +700,8 @@ def partition_surfaces(mesh, matrices, offsets, masks, palette, *, reference_col
         if len(faces):
             piece = mesh.submesh([faces], repair=False)[0]
             if label and np.any(color_weight[faces]):
+                if not hasattr(piece.visual, "face_colors"):
+                    piece.visual = trimesh.visual.ColorVisuals(mesh=piece)
                 projected = np.asarray(piece.visual.face_colors).copy()
                 known = color_weight[faces] > 0
                 selected = faces[known]

@@ -15,7 +15,7 @@ from aethryx_bridge import inspect_avatar_glb
 from aethryx_delivery import DELIVERY_STAGES, DeliveryCancelled, build_reviewed_delivery, verify_delivery
 from aethryx_jobs import ComponentJobs
 from aethryx_profiles import BUNDLED_BODY
-from aethryx_reference import analyze_view_alignment
+from aethryx_reference import analyze_view_alignment, build_auto_front_setup
 from studio_project import load_project, save_project
 
 
@@ -54,7 +54,9 @@ class PortableDeliveryTests(unittest.TestCase):
                     with self.assertRaises(DeliveryCancelled):
                         build_reviewed_delivery(project, root, cancelled=cancelled)
 
-                output = build_reviewed_delivery(project, root, on_stage=lambda i, label: progress.append((i, label)))
+                output = build_reviewed_delivery(project, root / "new-delivery",
+                                                 on_stage=lambda i, label: progress.append((i, label)))
+                self.assertEqual(output.parent.name, "new-delivery")
                 inputs = verify_delivery(output)["inputs"]
                 image.write_bytes(b"edited reference")
                 with self.assertRaisesRegex(ValueError, "Las entradas cambiaron"):
@@ -113,3 +115,22 @@ class PortableDeliveryTests(unittest.TestCase):
             calibration, points, _ = analyze_view_alignment("unused.png", image, "front")
         self.assertEqual(calibration, ([40., 90.], 10.))
         self.assertEqual(points, {})
+
+    def test_auto_front_setup_keeps_inferred_anchors_subject_to_review(self):
+        with TemporaryDirectory() as directory:
+            folder = Path(directory)
+            image = Image.new("RGBA", (160, 240))
+            ImageDraw.Draw(image).rectangle((42, 20, 118, 216), fill="white")
+            source = folder / "source.png"
+            image.save(source)
+            detections = {joint: {"xy": xy, "visibility": .8} for joint, xy in
+                          {0: [80, 45], 11: [104, 80], 12: [56, 80], 23: [98, 135], 24: [62, 135]}.items()}
+            with patch("aethryx_engines.suggest_anatomical_points", return_value=detections), patch(
+                    "aethryx_engines.suggest_facial_points", return_value={}):
+                setup = build_auto_front_setup(source, work_dir=folder / "analysis", use_sculpted_body=False)
+            front = setup["views"]["front"]
+            self.assertGreaterEqual(len(setup["vertex_indices"]), 4)
+            self.assertEqual(front["suggested"], setup["vertex_indices"])
+            self.assertEqual(len(set(front["suggested"])), len(front["landmark_weights"]))
+            self.assertTrue(setup["allow_inferred_depth"])
+            self.assertTrue(Path(front["body_mask"]).is_file())

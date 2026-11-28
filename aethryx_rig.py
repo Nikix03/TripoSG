@@ -226,6 +226,14 @@ def humanoid_skeleton(body, eyes=None, offsets=None):
     joint("Chest", "Spine", 0, .72, -.18)
     joint("Neck", "Chest", 0, .844, -.16)
     joint("Head", "Neck", 0, .918, -.15)
+    # Ordered from +Z (Thumb) to -Z (Little) to match the MakeHuman hand orientation.
+    finger_specs = (
+        ("Thumb", .882, .608, .385, .022, -.009, .052),
+        ("Index", .926, .606, .358, .048, -.031, .048),
+        ("Middle", .934, .604, .295, .062, -.033, .042),
+        ("Ring", .930, .602, .232, .054, -.029, .032),
+        ("Little", .916, .607, .174, .038, -.018, .016),
+    )
     for side, sign, eye_node in zip(("Left", "Right"), (1, -1), EYES):
         def side_joint(suffix, parent, x, y, z):
             joint(side + suffix, parent, sign * x, y, z)
@@ -241,15 +249,22 @@ def humanoid_skeleton(body, eyes=None, offsets=None):
         side_joint("Eye", "Head", .094, .911, .120)
         if eyes and eye_node in eyes:
             positions[-1] = eyes[eye_node].bounds.mean(axis=0).tolist()
-        for index, finger in enumerate(("Thumb", "Index", "Middle", "Ring", "Little")):
-            reach = .887 + .018 * min(index, 3)
-            offset = .215 + .034 * index
-            side_joint(finger + "Proximal", side + "Hand", reach, .609 - .003 * index, offset)
+        for finger, reach, fy, fz, dx, dy, dz in finger_specs:
+            side_joint(finger + "Proximal", side + "Hand", reach, fy, fz)
             side_joint(finger + "Intermediate", side + finger + "Proximal",
-                       reach + .031, .592 - .003 * index, offset + .042)
+                       reach + dx * .52, fy + dy * .52, fz + dz * .52)
             side_joint(finger + "Distal", side + finger + "Intermediate",
-                       reach + .054, .579 - .003 * index, offset + .072)
+                       reach + dx, fy + dy, fz + dz)
     positions = np.asarray(positions, dtype=np.float64)
+    tracked = body.metadata.get("aethryx_skeleton_positions")
+    if isinstance(tracked, (list, np.ndarray)) and np.shape(tracked) == positions.shape:
+        candidate = np.asarray(tracked, dtype=np.float64)
+        if np.isfinite(candidate).all():
+            positions = candidate
+            if eyes:
+                for eye_joint, eye_node in zip(("LeftEye", "RightEye"), EYES):
+                    if eye_node in eyes:
+                        positions[names.index(eye_joint)] = eyes[eye_node].bounds.mean(axis=0)
     if offsets:
         if not isinstance(offsets, dict) or set(offsets) - set(names):
             raise ValueError("Los ajustes contienen una articulación desconocida.")

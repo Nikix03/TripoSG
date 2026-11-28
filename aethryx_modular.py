@@ -744,15 +744,129 @@ def fit_garment(body, clearance=.012, thickness=.006, color="#4266ac", *, style=
     return apply_material(mesh, color, projection="cylindrical", roughness=.8), report
 
 
+def clear_garment_penetrations(body, garment, *, clearance=.003, maximum_shift=.03):
+    """Push penetrating garment vertices outside the full body while pairing inner/outer walls."""
+    from pyvista import PolyData
+    from scipy.sparse import coo_matrix
+    from vtkmodules.vtkFiltersCore import vtkImplicitPolyDataDistance
+
+    if not body.is_volume or not garment.is_volume:
+        return garment.copy(), body_contacts(body, garment)
+    before = body_contacts(body, garment)
+    if before["contacts"] == 0 and (before["inside"] or 0) == 0:
+        return garment.copy(), before
+
+    surface = PolyData(body.vertices, np.column_stack((np.full(len(body.faces), 3), body.faces)))
+    locator = vtkImplicitPolyDataDistance()
+    locator.SetInput(surface)
+    height = float(body.extents[1])
+    vertices = np.asarray(garment.vertices).copy()
+    half = len(vertices) // 2
+    paired = (
+        len(vertices) % 2 == 0 and half > 0
+        and np.max(np.linalg.norm(vertices[:half] - vertices[half:], axis=1)) <= .04 * height
+    )
+    edges = garment.edges_unique
+    adjacency = coo_matrix((np.ones(len(edges)), edges.T), shape=(len(vertices), len(vertices))).tocsr()
+    adjacency = adjacency + adjacency.T
+    degree = np.maximum(np.asarray(adjacency.sum(axis=1)).ravel(), 1)
+    ceiling = maximum_shift * height
+    candidate = garment.copy()
+    best, best_report = garment.copy(), before
+    for _ in range(8):
+        moves = np.zeros_like(vertices)
+        target = height * clearance
+        for index, point in enumerate(candidate.vertices):
+            closest = [0., 0., 0.]
+            signed = locator.EvaluateFunctionAndGetClosestPoint(point, closest)
+            if signed < target:
+                direction = point - np.asarray(closest)
+                norm = float(np.linalg.norm(direction))
+                if norm > 1e-9:
+                    unit = -direction / norm if signed < 0 else direction / norm
+                else:
+                    unit = candidate.vertex_normals[index]
+                moves[index] = unit * (target - signed)
+        moves += .35 * (adjacency @ moves) / degree[:, None]
+        if paired:
+            outer, inner = moves[:half], moves[half:]
+            stronger = np.linalg.norm(outer, axis=1) >= np.linalg.norm(inner, axis=1)
+            moves[:] = np.tile(np.where(stronger[:, None], outer, inner), (2, 1))
+        offset = (candidate.vertices - vertices) + moves
+        length = np.linalg.norm(offset, axis=1)
+        offset *= np.minimum(1., ceiling / np.maximum(length, 1e-12))[:, None]
+        candidate.vertices = vertices + offset
+        current = body_contacts(body, candidate)
+        if candidate.is_volume and (
+            current["contacts"] + (current["inside"] or 0)
+            < best_report["contacts"] + (best_report["inside"] or 0)
+        ):
+            best, best_report = candidate.copy(), current
+            if best_report["contacts"] == 0 and (best_report["inside"] or 0) == 0:
+                break
+    return best, best_report
+
+
+def _conformal_torso_garment(body, style, clearance=.0035, thickness=.003):
+    """Fit a conformal closed garment shell directly on torso faces so lowered arms stay clear."""
+    from aethryx_rig import humanoid_skeleton, skin_weights
+
+    skeleton = humanoid_skeleton(body)
+    names = skeleton[0]
+    arm_indices = {
+        index for index, name in enumerate(names)
+        if any(part in name for part in ("UpperArm", "LowerArm", "Hand", "Proximal", "Intermediate", "Distal"))
+    }
+    joints, _ = skin_weights(np.asarray(body.vertices), skeleton, 1)
+    arm_face = np.isin(joints[body.faces, 0], list(arm_indices)).any(axis=1)
+    low, high = body.bounds
+    height = float(high[1] - low[1])
+    start_level, end_level = GARMENT_STYLES[style]
+    if body.metadata.get("aethryx_style") in {"genesis-anime-v3", "genesis-anime-v6", "genesis-anime-v7"} and style != "falda":
+        end_level = .71
+    centers = body.triangles_center
+    y = (centers[:, 1] - low[1]) / height
+    selected = (~arm_face) & (y >= start_level) & (y <= end_level)
+    if not selected.any():
+        raise ValueError("No se encontraron caras del torso para la prenda.")
+    shell = _shell(body, selected, clearance * height, thickness * height)
+    shell.metadata["aethryx_garment"] = {"style": style, "clearance": clearance, "thickness": thickness}
+    return apply_material(shell, "#4266ac", projection="cylindrical", roughness=.8)
+
+
 def fit_garment_with_clearance(body, clearance, thickness, style):
     attempts = [clearance]
     if .003 <= clearance <= .06:
-        attempts.extend(c for c in (clearance * 1.35, clearance * 1.75) if c <= .06)
+        attempts.extend(c for c in (clearance * .65, clearance * .40, clearance * 1.35, clearance * 1.75) if .003 <= c <= .06)
+    last_report = None
     for amount in attempts:
-        mesh, report = fit_garment(body, amount, thickness, style=style)
+        try:
+            mesh, report = fit_garment(body, amount, thickness, style=style)
+        except ValueError:
+            continue
         if report["contacts"] == 0 and report["inside"] == 0:
             return mesh, amount
-    raise ValueError(f"Se rechazó el ajuste. Contactos {report['contacts']}, vértices dentro {report['inside']}.")
+        cleared, cleared_report = clear_garment_penetrations(body, mesh, clearance=max(.002, amount * .25))
+        if cleared_report["contacts"] == 0 and cleared_report["inside"] == 0 and cleared.is_volume:
+            return cleared, amount
+        if last_report is None or (cleared_report["contacts"] + (cleared_report["inside"] or 0)
+                                   < last_report["contacts"] + (last_report["inside"] or 0)):
+            last_report = cleared_report
+    if style in {"top", "vestido"}:
+        for amount in (.004, .003, .0025):
+            try:
+                conformal = _conformal_torso_garment(body, style, clearance=amount, thickness=min(thickness, .003))
+            except ValueError:
+                continue
+            report = body_contacts(body, conformal)
+            if report["contacts"] == 0 and report["inside"] == 0 and conformal.is_volume:
+                return conformal, amount
+            cleared, cleared_report = clear_garment_penetrations(body, conformal, clearance=.002)
+            if cleared_report["contacts"] == 0 and cleared_report["inside"] == 0 and cleared.is_volume:
+                return cleared, amount
+    if last_report is None:
+        raise ValueError("No se pudo ajustar la prenda sin contactos.")
+    raise ValueError(f"Se rechazó el ajuste. Contactos {last_report['contacts']}, vértices dentro {last_report['inside']}.")
 
 
 def fit_sleeves(body, clearance=.009, thickness=.004):
@@ -915,20 +1029,45 @@ def fit_footwear(body, clearance=.007, thickness=.006, color="#353044", *, round
     return shoes
 
 
+def _trunk_slice_mesh(body):
+    """Return a torso/leg submesh excluding lowered arms so garment sections stay clean."""
+    try:
+        from aethryx_rig import humanoid_skeleton, skin_weights
+
+        skeleton = humanoid_skeleton(body)
+        names = skeleton[0]
+        arm_indices = {
+            index for index, name in enumerate(names)
+            if any(part in name for part in ("UpperArm", "LowerArm", "Hand", "Proximal", "Intermediate", "Distal"))
+        }
+        joints, _ = skin_weights(np.asarray(body.vertices), skeleton, 1)
+        dominant = joints[body.faces, 0]
+        # Keep faces where fewer than 2 vertices belong to arm joints so shoulder seams remain closed.
+        keep = np.isin(dominant, list(arm_indices)).sum(axis=1) <= 1
+        if keep.any():
+            return body.submesh([keep], repair=False)[0]
+    except Exception:
+        pass
+    return body
+
+
 def _torso_loft(body, clearance, thickness, style="top"):
     """Loft a closed two-layer top from torso sections, with clean planar rims."""
     low, high = body.bounds
     height = high[1] - low[1]
     start_level, end_level = GARMENT_STYLES[style]
-    if body.metadata.get("aethryx_style") in {"genesis-anime-v3", "genesis-anime-v6"} and style != "falda":
+    if body.metadata.get("aethryx_style") in {"genesis-anime-v3", "genesis-anime-v6", "genesis-anime-v7"} and style != "falda":
         end_level = .695
+    slice_source = _trunk_slice_mesh(body) if style != "falda" else body
     levels = np.linspace(start_level, end_level, 36 if style != "top" else 32)
     theta = np.linspace(0, 2 * np.pi, 72, endpoint=False)
     directions = np.column_stack((np.cos(theta), np.sin(theta)))
     inside, outside = [], []
     for fraction_y in levels:
         level = low[1] + fraction_y * height
-        section = body.section(plane_origin=[0, level, 0], plane_normal=[0, 1, 0])
+        section = slice_source.section(plane_origin=[0, level, 0], plane_normal=[0, 1, 0])
+        if section is None or not section.discrete:
+            section = body.section(plane_origin=[0, level, 0], plane_normal=[0, 1, 0])
         if section is None or not section.discrete:
             raise ValueError("El torso no forma un contorno cerrado a la altura de la prenda.")
         loops = [poly[:, [0, 2]] for poly in section.discrete]

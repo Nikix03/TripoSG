@@ -162,6 +162,8 @@ def build_reviewed_delivery(project, folder, *, on_stage=None, cancelled=None, e
         data = {**data, "reviewed_suggestions_reused": True}
     data = {**data, "export_hybrid": True, "export_rig": True, "repair_hair_in_poses": True}
     stage(1)
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
     if source.get("model"):
         if Path(source["model"]).suffix.lower() != ".glb":
             raise ValueError("El modelo editable guardado debe estar en GLB para preparar la entrega.")

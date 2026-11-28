@@ -20,7 +20,7 @@ from aethryx_anatomy import (
 from aethryx_engines import suggest_anatomical_points
 from aethryx_profiles import BODY_PROFILES, BUNDLED_BODY, POSE_VERTICES
 from aethryx_reference import (
-    AnimeSilhouette, analyze_view_alignment, SEE_THROUGH_COLORS, SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, profile_opposite,
+    AnimeSilhouette, analyze_view_alignment, build_auto_front_setup, SEE_THROUGH_COLORS, SEMANTIC_COLORS, compare_silhouette, import_see_through_v2, profile_opposite,
     foreground_crop_diagnostics, named_reference_views, reference_silhouette, refine_visible_mask,
     pose_points_for_view, segment_anime_reference, vertical_pose_disagreements,
     segment_see_through_v2, semantic_reference_regions,
@@ -54,6 +54,7 @@ class AnatomyDialog(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.result = None
         self.guided_image = False
+        self.auto_fit_options = {}
         self.draft = None
         self.triposg_crop = None
         self.reference_regions = deepcopy(reference_regions)
@@ -214,6 +215,7 @@ class AnatomyDialog(tk.Toplevel):
         self._replace_template(path, mesh)
 
     def _replace_template(self, path, mesh):
+        self.auto_fit_options = {}
         self.template_path, self.template = str(path), mesh
         self.indices.clear()
         self.pose_links.clear()
@@ -275,7 +277,22 @@ class AnatomyDialog(tk.Toplevel):
         self.export_hybrid.set(True)
         self.export_rig.set(True)
         self._change_view()
-        self.after_idle(lambda: self._auto_align(use_isnet=True))
+        profile = self.profile.get()
+
+        def analyze():
+            try:
+                return build_auto_front_setup(path, use_see_through=True, profile=profile)
+            except (ImportError, OSError, RuntimeError, ValueError):
+                return None
+
+        def review(setup):
+            if setup is None:
+                self._auto_align(use_isnet=True)
+                return
+            self.load_setup(setup)
+            self.status.set("Revisa los puntos amarillos y el encuadre. La profundidad se infiere de la plantilla.")
+
+        self.after_idle(lambda: self._work("Analizando imagen y preparando una propuesta…", analyze, review))
 
     def _load_image(self):
         if self.busy:
@@ -948,7 +965,7 @@ class AnatomyDialog(tk.Toplevel):
         if not self.template_path:
             raise ValueError("Carga una plantilla corporal.")
         indices = self.indices.copy()
-        bundled = self.template_path == str(BUNDLED_BODY)
+        bundled = self.template_path == str(BUNDLED_BODY) and not self.auto_fit_options.get("use_sculpted_body")
         active = {name for name, state in self.views.items() if "image" in state}
         partial = 0 < len(active) < 3
         may_infer = partial or self.infer_occlusion_depth.get()
@@ -971,17 +988,24 @@ class AnatomyDialog(tk.Toplevel):
             if require_ready and ("image" not in state or "projection" not in state):
                 raise ValueError(f"Carga y calibra la vista {VIEW_LABELS[name].lower()}.")
             view = {key: deepcopy(value) for key, value in state.items() if key != "points"}
+            weights = view.pop("anchor_weights", None)
+            if weights is not None:
+                view["landmark_weights"] = [
+                    weights.get(vertex, 1.) if state["points"].get(vertex, (None, False))[1] else 1.
+                    for vertex in indices
+                ]
             if name == "side":
                 view["horizontal_only"] = self.side_horizontal_only.get()
             view["landmarks"] = [
                 state["points"].get(vertex, (None, False))[0] or [None, None] for vertex in indices
             ]
             view["suggested"] = [vertex for vertex, (_, proposed) in state["points"].items() if proposed]
-            if self.reconcile_pose.get():
+            if self.reconcile_pose.get() and weights is None:
                 view["landmark_weights"] = [.6 if vertex in view["suggested"] else 1. for vertex in indices]
             view["hidden"] = [vertex for vertex, (point, _) in state["points"].items() if point is None]
             views[name] = view
         return {
+            **self.auto_fit_options,
             "template": self.template_path, "vertex_indices": indices, "views": views,
             "palette": deepcopy(self.palette), "pose_links": self.pose_links.copy(),
             "side_opposite": self.side.get(),
@@ -992,7 +1016,7 @@ class AnatomyDialog(tk.Toplevel):
             "reconcile_pose": self.reconcile_pose.get(),
             "export_rig": self.export_rig.get(),
             "export_hybrid": self.export_hybrid.get(),
-            "smoothing": .008 if bundled else 0,
+            "smoothing": self.auto_fit_options.get("smoothing", .008 if bundled else 0),
             "proportions": {key: float(var.get().replace(",", ".")) for key, var in self.factors.items()},
         }
 
@@ -1025,7 +1049,12 @@ class AnatomyDialog(tk.Toplevel):
     def load_setup(self, data, root=Path(".")):
         template_path = str(BUNDLED_BODY if data.get("bundled_template")
                             else (root / data["template"]).resolve())
-        template = load_body_template(template_path)
+        profile = data.get("profile", "Anime neutro")
+        if data.get("use_sculpted_body"):
+            from aethryx_anime import sculpted_body
+            template = sculpted_body(profile, refined=True, facial_loops=True)
+        else:
+            template = load_body_template(template_path)
         indices = data["vertex_indices"]
         if (template.extents[1] <= 0 or len(indices) != len(set(indices))
                 or any(type(index) is not int or not 0 <= index < len(template.vertices) for index in indices)):
@@ -1040,6 +1069,11 @@ class AnatomyDialog(tk.Toplevel):
                 if point != [None, None] and (not isinstance(point, list) or len(point) != 2
                         or any(type(value) not in (int, float) or not np.isfinite(value) for value in point)):
                     raise ValueError("Cada punto debe tener dos coordenadas finitas o estar oculto.")
+            weights = view.pop("landmark_weights", None)
+            if weights is not None:
+                if len(weights) != len(indices):
+                    raise ValueError("La confianza debe coincidir con los puntos de la plantilla.")
+                view["anchor_weights"] = dict(zip(indices, weights))
             suggested = set(view.pop("suggested", []))
             hidden = set(view.pop("hidden", []))
             view["points"] = {
@@ -1062,7 +1096,10 @@ class AnatomyDialog(tk.Toplevel):
             views[name] = view
         pose_links = {int(vertex): joint for vertex, joint in data.get("pose_links", {}).items()}
         self.template_path, self.template = template_path, template
-        self.indices, self.views, self.images = indices, views, images
+        self.indices, self.views, self.images = list(indices), views, images
+        self.auto_fit_options = {key: deepcopy(data[key]) for key in
+                                 ("use_sculpted_body", "pre_pose", "pre_proportions", "appearance",
+                                  "auto_generated", "repair_hair_in_poses", "smoothing") if key in data}
         self.palette = data.get("palette", {})
         profile = data.get("profile")
         self.profile.set(profile if template_path == str(BUNDLED_BODY) and profile in BODY_PROFILES else "Personalizado")
